@@ -1,6 +1,9 @@
 services:
   umbrel:
-    image: dockurr/umbrel
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dockurr/umbrel:latest
     container_name: umbrel
     pid: host
     ports:

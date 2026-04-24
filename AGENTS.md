@@ -9,13 +9,16 @@ This is a Docker container project for [UmbrelOS](https://umbrel.com/umbrelos). 
 - **Dockerfile**: Multi-stage build; pulls upstream umbrel at `VERSION_ARG`, overlays `source/` patches, builds UI and backend, creates final Debian-based image.
 - **entry.sh**: Container entry point; sets up Docker networking (`umbrel_main_network` at `10.21.0.0/16`), verifies bind mounts, thenexecs into umbreld.
 - **source/**: TypeScript source patches overlaid onto the upstream umbrel at build time (copied to `/packages/umbreld/source` in the base stage).
-- **compose.yml**: Development-friendly compose file; production uses the published Docker image.
+- **compose.yml**: Builds locally from Dockerfile (no remote image pull needed for local dev).
 
 ## Key Commands
 
 ```bash
-# Local build (not typical - see CI below)
-docker build -t dockurr/umbrel .
+# Deploy with local build (builds image first, then runs containers)
+docker compose up --build
+
+# Build only (without running)
+docker compose build
 
 # ShellCheck + Hadolint (run via CI, or locally)
 shellcheck entry.sh
