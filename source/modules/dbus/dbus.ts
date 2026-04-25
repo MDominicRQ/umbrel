@@ -40,28 +40,32 @@ export default class Dbus {
 		}
 
 		// Attach event handler to systemd service events
-		return new Promise((resolve, reject) => {
-			dbus
-				.systemBus()
-				.getService('org.freedesktop.systemd1')
-				.getInterface('/org/freedesktop/systemd1', 'org.freedesktop.systemd1.Manager', (error, manager) => {
-					if (error) return reject(error)
+		try {
+			await new Promise((resolve, reject) => {
+				dbus
+					.systemBus()
+					.getService('org.freedesktop.systemd1')
+					.getInterface('/org/freedesktop/systemd1', 'org.freedesktop.systemd1.Manager', (error, manager) => {
+						if (error) return reject(error)
 
-					// Add listeners
-					manager.addListener('UnitNew', handleDeviceChange)
-					manager.addListener('UnitRemoved', handleDeviceChange)
+						// Add listeners
+						manager.addListener('UnitNew', handleDeviceChange)
+						manager.addListener('UnitRemoved', handleDeviceChange)
 
-					// Create cleanup function
-					this.#removeDiskEventListeners = () => {
-						this.logger.log('Removing disk event listeners')
-						manager.removeListener('UnitNew', handleDeviceChange)
-						manager.removeListener('UnitRemoved', handleDeviceChange)
-						this.#removeDiskEventListeners = undefined
-					}
+						// Create cleanup function
+						this.#removeDiskEventListeners = () => {
+							this.logger.log('Removing disk event listeners')
+							manager.removeListener('UnitNew', handleDeviceChange)
+							manager.removeListener('UnitRemoved', handleDeviceChange)
+							this.#removeDiskEventListeners = undefined
+						}
 
-					resolve(true)
-				})
-		})
+						resolve(true)
+					})
+			})
+		} catch (error) {
+			this.logger.warn('D-Bus system bus unavailable, disk event listeners not attached')
+		}
 	}
 
 	async stop() {
