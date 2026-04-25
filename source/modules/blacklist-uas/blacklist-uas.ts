@@ -12,8 +12,17 @@ import {$} from 'execa'
 //
 // We use console.err for logs so they appear in umbrel-external-storage logs and
 // console.log to signal to the mount script that we're rebooting.
+//
+// Docker-incompatible: This module requires access to /boot and rugix-ctrl which
+// are not available in Docker containers. This is a no-op in Docker.
 export default async function blacklistUASDriver() {
 	try {
+		// Docker-incompatible: Check if we're in Docker and skip entirely
+		if (!fse.existsSync('/run/rugix')) {
+			console.error('Not running on bare metal (rugix not available), skipping UAS blacklist')
+			return
+		}
+
 		console.error('Checking for UAS devices to blacklist')
 		const justDidRebootFile = '/umbrel-just-did-reboot'
 		// Only run on Raspberry Pi 4
@@ -84,9 +93,12 @@ export default async function blacklistUASDriver() {
 		console.log('mount-script-halt')
 		// We need to make sure we commit before rebooting otherwise
 		// OTA updates will get instantly rolled back.
+		// Docker-incompatible: rugix-ctrl is not available in Docker - wrapped in try-catch
 		try {
 			await $`rugix-ctrl system commit`
-		} catch {}
+		} catch {
+			// Ignore rugix-ctrl errors in case it fails
+		}
 		await fse.writeFile(justDidRebootFile, cmdline)
 		await $`reboot`
 		return true

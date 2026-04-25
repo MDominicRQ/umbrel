@@ -34,6 +34,7 @@ class Migration {
 
 		const pathExists = await fse.pathExists(osPersistentOverlayPath)
 		if (!pathExists) {
+			// Docker-incompatible: /data/umbrel-os does not exist in fresh Docker install
 			this.logger.log('OS overlay path does not exist, skipping Mender to Rugix state migration')
 			return {reboot: false}
 		}
@@ -65,6 +66,7 @@ class Migration {
 			'OS overlay path is a symbolic link, committing and rebooting to complete Mender to Rugix state migration...',
 		)
 		// This should've already happened in umbreld.start() but we'll just explicitly do it again here to be sure.
+		// Docker-incompatible: commitOsPartition is now a no-op in Docker
 		await commitOsPartition(this.umbreld)
 		return {reboot: true}
 	}

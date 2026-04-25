@@ -291,6 +291,9 @@ export async function reboot(): Promise<boolean> {
 }
 
 export async function commitOsPartition(umbreld: Umbreld): Promise<boolean> {
+	// Docker-incompatible: rugix-ctrl is not available in Docker containers
+	// This function is a no-op in Docker - the rugix state management is not needed
+	umbreld.logger.log('OS partition commit: skipped (not applicable in Docker)')
 	return true
 }
 
@@ -350,7 +353,8 @@ export async function isUmbrelOS() {
 }
 
 export async function setCpuGovernor(governor: string) {
-	await fse.writeFile('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor', governor)
+	// Docker-incompatible: /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor not available in Docker
+	return
 }
 
 export async function hasWifi() {

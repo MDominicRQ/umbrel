@@ -179,25 +179,36 @@ export default class Raid {
 	#lastEmittedExpansion?: ExpansionStatus
 	#lastEmittedRebuild?: RebuildStatus
 	#lastEmittedReplace?: ReplaceStatus
+	#isDocker: boolean
 
 	constructor(umbreld: Umbreld) {
 		this.#umbreld = umbreld
 		const {name} = this.constructor
 		this.logger = umbreld.logger.createChildLogger(`hardware:${name.toLowerCase()}`)
 
+		// Docker-incompatible: /run/rugix/mounts/config does not exist in Docker
+		// Detect Docker environment and use alternative config storage
+		this.#isDocker = !fse.existsSync('/run/rugix')
 		const configPartition = '/run/rugix/mounts/config'
-		const configFile = `${configPartition}/umbrel.yaml`
+		const configFile = this.#isDocker
+			? `${umbreld.dataDirectory}/raid-config.yaml`
+			: `${configPartition}/umbrel.yaml`
+
 		this.configStore = new FileStore<ConfigStore>({
 			filePath: configFile,
-			onBeforeWrite: () => $`mount -o remount,rw ${configPartition}`,
-			onAfterWrite: () =>
-				pRetry(() => $`mount -o remount,ro ${configPartition}`, {
-					retries: 5,
-					factor: 1.1,
-					minTimeout: 100,
-				}).catch((error) => {
-					this.logger.error('Failed to remount config partition read-only', error)
-				}),
+			onBeforeWrite: this.#isDocker
+				? undefined
+				: () => $`mount -o remount,rw ${configPartition}`,
+			onAfterWrite: this.#isDocker
+				? undefined
+				: () =>
+					pRetry(() => $`mount -o remount,ro ${configPartition}`, {
+						retries: 5,
+						factor: 1.1,
+						minTimeout: 100,
+					}).catch((error) => {
+						this.logger.error('Failed to remount config partition read-only', error)
+					}),
 		})
 	}
 
@@ -213,20 +224,25 @@ export default class Raid {
 	async start() {
 		this.logger.log('Starting RAID')
 
-		try {
-			const totalMemory = os.totalmem()
-			const arcMin = Math.max(32 * 1024 * 1024, Math.floor(totalMemory / 64))
-			await fse.writeFile('/sys/module/zfs/parameters/zfs_arc_min', String(arcMin))
-			this.logger.log(`Set ZFS ARC min to ${prettyBytes(arcMin)}`)
-		} catch (error) {
-			this.logger.error('Failed to set ZFS ARC min', error)
-		}
+		// Docker-incompatible: ZFS sysfs parameters not available in Docker
+		if (!this.#isDocker) {
+			try {
+				const totalMemory = os.totalmem()
+				const arcMin = Math.max(32 * 1024 * 1024, Math.floor(totalMemory / 64))
+				await fse.writeFile('/sys/module/zfs/parameters/zfs_arc_min', String(arcMin))
+				this.logger.log(`Set ZFS ARC min to ${prettyBytes(arcMin)}`)
+			} catch (error) {
+				this.logger.log('Failed to set ZFS ARC min (not applicable in Docker)')
+			}
 
-		try {
-			await fse.writeFile('/sys/module/zfs/parameters/l2arc_exclude_special', '1')
-			this.logger.log('Set ZFS l2arc_exclude_special to 1')
-		} catch (error) {
-			this.logger.error('Failed to set ZFS l2arc_exclude_special', error)
+			try {
+				await fse.writeFile('/sys/module/zfs/parameters/l2arc_exclude_special', '1')
+				this.logger.log('Set ZFS l2arc_exclude_special to 1')
+			} catch (error) {
+				this.logger.log('Failed to set ZFS l2arc_exclude_special (not applicable in Docker)')
+			}
+		} else {
+			this.logger.log('RAID: ZFS configuration skipped (not applicable in Docker)')
 		}
 
 		try {
@@ -235,6 +251,7 @@ export default class Raid {
 			this.logger.error('Failed to start pool monitor', error)
 		}
 
+		// Docker-incompatible: RAID setup process not applicable in Docker
 		await this.handlePostBootRaidSetupProcess().catch((error) =>
 			this.logger.error('Failed to handle initial RAID setup boot', error),
 		)
@@ -664,6 +681,8 @@ export default class Raid {
 	}
 
 	async checkRaidMountFailure(): Promise<boolean> {
+		// Docker-incompatible: /run/rugix/mounts/data path not available in Docker
+		if (this.#isDocker) return false
 		return fse.pathExists('/run/rugix/mounts/data/.rugix/data-mount-error.log')
 	}
 

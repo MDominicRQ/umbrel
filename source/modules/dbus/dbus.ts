@@ -19,8 +19,10 @@ export default class Dbus {
 	async start() {
 		this.logger.log('Starting dbus')
 
+		// Docker-incompatible: D-Bus system bus socket not available in Docker
+		// Make disk event listeners optional and graceful
 		await this.addDiskEventListeners().catch((error) => {
-			this.logger.error(`Failed to add disk event listeners`, error)
+			this.logger.log(`Disk event listeners not available (D-Bus unavailable in Docker): ${error.message}`)
 		})
 	}
 
@@ -42,7 +44,14 @@ export default class Dbus {
 		// Attach event handler to systemd service events
 		try {
 			await new Promise((resolve, reject) => {
-				const bus = dbus.systemBus()
+				let bus
+				try {
+					bus = dbus.systemBus()
+				} catch (error) {
+					// Docker-incompatible: D-Bus socket not available
+					return reject(error)
+				}
+
 				bus.on('error', (error) => {
 					this.logger.log(`D-Bus connection error: ${error.message}`)
 				})
@@ -67,7 +76,9 @@ export default class Dbus {
 					})
 			})
 		} catch (error) {
-			this.logger.log('D-Bus system bus unavailable, disk event listeners not attached')
+			// Docker-incompatible: D-Bus system bus unavailable in Docker
+			// This is non-fatal - log and continue without disk event listeners
+			this.logger.log('D-Bus system bus unavailable in Docker, disk event listeners not attached')
 		}
 	}
 

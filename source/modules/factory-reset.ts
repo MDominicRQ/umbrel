@@ -50,5 +50,7 @@ export async function performReset(umbreld: Umbreld) {
 		return false
 	}
 
-        return failWithError(`Factory reset is not supported in a Docker container, just remove the volume!`)
+	// Docker-incompatible: Factory reset requires rugix-ctrl and system-level operations
+	// that are not available in Docker. Just remove the volume instead.
+	return failWithError(`Factory reset is not supported in a Docker container - please remove the volume instead`)
 }

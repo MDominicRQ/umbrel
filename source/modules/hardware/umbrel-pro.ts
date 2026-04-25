@@ -7,6 +7,9 @@ import type Umbreld from '../../index.js'
 import runEvery from '../utilities/run-every.js'
 import {detectDevice} from '../system/system.js'
 
+// Docker-incompatible: EC access via /dev/port not available in Docker
+const IS_DOCKER = !require('fs').existsSync('/dev/port')
+
 const EC_STATUS_COMMAND_PORT_ADDRESS = 0x66
 const EC_DATA_PORT_ADDRESS = 0x62
 
@@ -68,11 +71,14 @@ export default class UmbrelPro {
 	#stopManagingFan?: () => void
 	#lastFanSpeed?: number
 	logger: Umbreld['logger']
+	#isDocker: boolean
 
 	constructor(umbreld: Umbreld) {
 		this.#umbreld = umbreld
 		const {name} = this.constructor
 		this.logger = umbreld.logger.createChildLogger(`hardware:${name.toLowerCase()}`)
+		// Docker-incompatible: /dev/port not available in Docker
+		this.#isDocker = IS_DOCKER
 	}
 
 	async isUmbrelPro(): Promise<boolean> {
@@ -82,6 +88,12 @@ export default class UmbrelPro {
 
 	async start() {
 		if (!(await this.isUmbrelPro())) return
+
+		// Docker-incompatible: EC registers not accessible in Docker
+		if (this.#isDocker) {
+			this.logger.log('Starting Umbrel Pro (EC access unavailable in Docker, fan management disabled)')
+			return
+		}
 
 		this.logger.log('Starting Umbrel Pro')
 
@@ -101,11 +113,15 @@ export default class UmbrelPro {
 	}
 
 	async #writeEcRegister(register: number, value: number): Promise<void> {
+		// Docker-incompatible: EC register access not available in Docker
+		if (this.#isDocker) throw new Error('EC register access not available in Docker')
 		if (!(await this.isUmbrelPro())) throw new Error('Refusing to write EC register on non Umbrel Pro hardware')
 		return this.#ecRegisterCommandQueue.add(async () => writeEcRegister(register, value))
 	}
 
 	async #readEcRegister(register: number): Promise<number> {
+		// Docker-incompatible: EC register access not available in Docker
+		if (this.#isDocker) throw new Error('EC register access not available in Docker')
 		if (!(await this.isUmbrelPro())) throw new Error('Refusing to read EC register on non Umbrel Pro hardware')
 		return this.#ecRegisterCommandQueue.add(async () => readEcRegister(register)) as Promise<number>
 	}
@@ -150,6 +166,8 @@ export default class UmbrelPro {
 	}
 
 	async setMinFanSpeed(percent: number): Promise<void> {
+		// Docker-incompatible: EC access not available in Docker
+		if (this.#isDocker) return
 		const EC_MIN_FAN_SPEED_ENABLE_ADDRESS = 0x5e
 		const EC_MIN_FAN_SPEED_ADDRESS = 0x5f
 
@@ -177,16 +195,22 @@ export default class UmbrelPro {
 	EC_LED_STATE_ADDRESS = 0x50
 
 	async setLedOff(): Promise<void> {
+		// Docker-incompatible: EC access not available in Docker
+		if (this.#isDocker) return
 		const LED_STATE_OFF_VALUE = 0
 		await this.#writeEcRegister(this.EC_LED_STATE_ADDRESS, LED_STATE_OFF_VALUE)
 	}
 
 	async setLedStatic(): Promise<void> {
+		// Docker-incompatible: EC access not available in Docker
+		if (this.#isDocker) return
 		const LED_STATE_STATIC_VALUE = 1
 		await this.#writeEcRegister(this.EC_LED_STATE_ADDRESS, LED_STATE_STATIC_VALUE)
 	}
 
 	async setLedColor({red, green, blue}: {red: number; green: number; blue: number}): Promise<void> {
+		// Docker-incompatible: EC access not available in Docker
+		if (this.#isDocker) return
 		const EC_LED_RED_ADDRESS = 0x51
 		const EC_LED_GREEN_ADDRESS = 0x59
 		const EC_LED_BLUE_ADDRESS = 0x55
@@ -201,36 +225,48 @@ export default class UmbrelPro {
 	}
 
 	async setLedWhite(): Promise<void> {
+		// Docker-incompatible: EC access not available in Docker
+		if (this.#isDocker) return
 		await this.setLedColor({red: 255, green: 100, blue: 128})
 	}
 
 	async setLedDefault(): Promise<void> {
+		// Docker-incompatible: EC access not available in Docker
+		if (this.#isDocker) return
 		await this.setLedStatic()
 		await this.setLedWhite()
 	}
 
 	async setLedBlinking(): Promise<void> {
+		// Docker-incompatible: EC access not available in Docker
+		if (this.#isDocker) return
 		const LED_STATE_BLINKING_VALUE = 2
 		await this.#writeEcRegister(this.EC_LED_STATE_ADDRESS, LED_STATE_BLINKING_VALUE)
 	}
 
 	async setLedBreathe(duration: number = 14): Promise<void> {
+		// Docker-incompatible: EC access not available in Docker
+		if (this.#isDocker) return
 		const EC_LED_BREATHING_DURATION_ADDRESS = 0x52
 		const LED_STATE_BREATHING_VALUE = 3
 
 		const clampedDuration = Math.max(0, Math.min(19, Math.round(duration)))
 		await this.#writeEcRegister(EC_LED_BREATHING_DURATION_ADDRESS, clampedDuration)
-		await this.#writeEcRegister(this.EC_LED_STATE_ADDRESS, LED_STATE_BREATHING_VALUE)
+		await this.#writeEcRegister(EC_LED_STATE_ADDRESS, LED_STATE_BREATHING_VALUE)
 	}
 
 	EC_RESET_BOOT_FLAG_ADDRESS = 0xa8
 
 	async wasBootedViaResetButton(): Promise<boolean> {
+		// Docker-incompatible: EC access not available in Docker
+		if (this.#isDocker) return false
 		const flag = await this.#readEcRegister(this.EC_RESET_BOOT_FLAG_ADDRESS)
 		return flag === 1
 	}
 
 	async clearResetBootFlag(): Promise<void> {
+		// Docker-incompatible: EC access not available in Docker
+		if (this.#isDocker) return
 		await this.#writeEcRegister(this.EC_RESET_BOOT_FLAG_ADDRESS, 0)
 	}
 
