@@ -10,11 +10,13 @@ type RepositoryApp = {
 
 export default class AppRepository {
 	umbreld: Umbreld
-	repoUrl: string
+	url: string
+	path: string
 
 	constructor(umbreld: Umbreld, repoUrl: string) {
 		this.umbreld = umbreld
-		this.repoUrl = repoUrl
+		this.url = repoUrl
+		this.path = ''
 	}
 
 	async getApps(): Promise<RepositoryApp[]> {
@@ -29,5 +31,13 @@ export default class AppRepository {
 
 	async getCategories(): Promise<string[]> {
 		return []
+	}
+
+	async readRegistry() {
+		return { apps: [], url: this.url }
+	}
+
+	async update() {
+		return true
 	}
 }
