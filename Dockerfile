@@ -9,11 +9,8 @@ FROM --platform=$BUILDPLATFORM scratch AS base
 ARG VERSION_ARG="master"
 ADD https://github.com/getumbrel/umbrel.git#${VERSION_ARG} /
 
-# Remove upstream's pre-compiled JavaScript files so our TypeScript patches
-# take precedence. The upstream repo has .js files that would override our .ts
-RUN find /packages/umbreld -name "*.js" -type f -delete 2>/dev/null || true
-
-# Apply custom patches - these .ts files will now be used instead of any .js
+# Apply custom patches - tsx interprets .ts files at runtime
+# No .js cleanup needed - tsx handles .ts directly
 COPY source /packages/umbreld/source
 
 #########################################################################
