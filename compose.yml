@@ -11,6 +11,8 @@ services:
     volumes:
       - ./umbrel:/data
       - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     restart: always
     stop_grace_period: 1m
     labels:

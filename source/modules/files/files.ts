@@ -233,7 +233,7 @@ export default class Files {
 		if (await fse.pathExists(path)) return true
 
 		// Create the directory
-		await fse.mkdir(path).catch((error) => {
+		await fse.mkdir(path, { recursive: true }).catch((error) => {
 			if (error?.message?.includes('ENOENT')) throw new Error('[parent-not-exist]')
 			if (error?.message?.includes('ENOTDIR')) throw new Error('[parent-not-directory]')
 			throw new Error(`[mkdir-failed] ${error?.message}`)
@@ -268,7 +268,11 @@ export default class Files {
 		// This will ensure that we complete these as fast as the slowest operation
 		const [stats, operations, thumbnail] = await Promise.all([
 			// We use lstat to ensure we don't follow symlinks
-			fse.lstat(systemPath),
+			// In Docker, directories may not exist yet, so we catch ENOENT
+			fse.lstat(systemPath).catch((error) => {
+				if (error.code === 'ENOENT') return null
+				throw error
+			}),
 
 			// Get the allowed operations
 			this.getAllowedOperations(path),
@@ -276,6 +280,11 @@ export default class Files {
 			// Get the thumbnail for supported file types only if the thumbnail already exists (does not generate a missing thumbnail)
 			this.thumbnails.getExistingThumbnail(systemPath).catch(() => undefined),
 		])
+
+		// If stats is null, the path doesn't exist
+		if (stats === null) {
+			throw new Error('[does-not-exist]')
+		}
 
 		// Get the type
 		let type
@@ -901,7 +910,16 @@ export default class Files {
 		// escaping the base directory if a symlink is in the path.
 		// e.g:
 		// /Home/symlink-to-root/etc/passwd
-		const resolvedBase = (await fse.realpath(basePath)).toLowerCase()
+		let resolvedBase: string
+		try {
+			resolvedBase = (await fse.realpath(basePath)).toLowerCase()
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+				resolvedBase = basePath.toLowerCase()
+			} else {
+				throw error
+			}
+		}
 		let resolvedPath: string
 		try {
 			resolvedPath = (await fse.realpath(systemPath)).toLowerCase()
