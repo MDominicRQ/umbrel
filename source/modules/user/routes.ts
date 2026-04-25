@@ -69,7 +69,13 @@ export default router({
 		}),
 
 	// Public method to check if a user exists
-	exists: publicProcedure.query(async ({ctx}) => ctx.user.exists()),
+	exists: publicProcedure.query(async ({ctx}) => {
+		try {
+			return await ctx.user.exists()
+		} catch {
+			return false
+		}
+	}),
 
 	// Given valid credentials returns a token for a user
 	login: publicProcedure
@@ -189,7 +195,13 @@ export default router({
 			return ctx.user.enable2fa(input.totpUri)
 		}),
 
-	is2faEnabled: publicProcedure.query(async ({ctx}) => ctx.user.is2faEnabled()),
+	is2faEnabled: publicProcedure.query(async ({ctx}) => {
+		try {
+			return await ctx.user.is2faEnabled()
+		} catch {
+			return false
+		}
+	}),
 
 	// Disables 2FA
 	disable2fa: privateProcedure
@@ -254,14 +266,22 @@ export default router({
 	// Returns the users wallpaper
 	// This endpoint is public so it can be shown on the login screen
 	wallpaper: publicProcedure.query(async ({ctx}) => {
-		const user = await ctx.user.get()
-		return user?.wallpaper ?? (await getDefaultWallpaper())
+		try {
+			const user = await ctx.user.get()
+			return user?.wallpaper ?? (await getDefaultWallpaper())
+		} catch {
+			return getDefaultWallpaper()
+		}
 	}),
 
 	// Returns the preferred language, if any
 	// This endpoint is public so it can be used on the login screen
 	language: publicProcedure.query(async ({ctx}) => {
-		const user = await ctx.user.get()
-		return user?.language ?? 'en'
+		try {
+			const user = await ctx.user.get()
+			return user?.language ?? 'en'
+		} catch {
+			return 'en'
+		}
 	}),
 })

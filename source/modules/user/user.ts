@@ -25,9 +25,10 @@ export default class User {
 		this.logger.log('Stopping user')
 	}
 
-	// Get the user object from the store
 	async get() {
-		return this.#store.get('user')
+		const user = await this.#store.get('user')
+		if (!user || typeof user !== 'object') return undefined
+		return user
 	}
 
 	// Check if a user exists
