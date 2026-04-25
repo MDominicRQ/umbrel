@@ -18,6 +18,14 @@ export default class User {
 	}
 
 	async start() {
+		// Auto-create Docker user with visible password if no user exists
+		if (!(await this.exists())) {
+			const randomDigits = Math.floor(1000 + Math.random() * 9000)
+			const password = `umbrel${randomDigits}`
+			this.logger.log(`Creating default user "admin" with password: ${password}`)
+			await this.register('admin', password, 'en')
+		}
+
 		this.logger.log('Starting user')
 	}
 
@@ -109,21 +117,17 @@ export default class User {
 
 	// Register a new user
 	async register(name: string, password: string, language: string) {
-		try {
-			// Check the user hasn't already signed up
-			if (await this.exists()) {
-				throw new Error('Attempted to register when user is already registered')
-			}
-
-			// Save the user
-			await this.setName(name)
-			await this.setLanguage(language)
-			// We can do this a cleaner way if we refactor widgets into a proper module
-			await this.#umbreld.store.set('widgets', ['umbrel:files-favorites', 'umbrel:storage', 'umbrel:system-stats'])
-			return this.setPassword(password)
-		} catch (error) {
-			this.logger.error('Failed to register user', error)
+		// Check the user hasn't already signed up
+		if (await this.exists()) {
+			throw new Error('Attempted to register when user is already registered')
 		}
+
+		// Save the user
+		await this.setName(name)
+		await this.setLanguage(language)
+		// We can do this a cleaner way if we refactor widgets into a proper module
+		await this.#umbreld.store.set('widgets', ['umbrel:files-favorites', 'umbrel:storage', 'umbrel:system-stats'])
+		return this.setPassword(password)
 	}
 
 	// Validate a password against the stored hash
