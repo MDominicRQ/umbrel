@@ -1,3 +1,4 @@
+import {existsSync} from 'node:fs'
 import {open} from 'node:fs/promises'
 import {setTimeout} from 'node:timers/promises'
 
@@ -8,7 +9,7 @@ import runEvery from '../utilities/run-every.js'
 import {detectDevice} from '../system/system.js'
 
 // Docker-incompatible: EC access via /dev/port not available in Docker
-const IS_DOCKER = !require('fs').existsSync('/dev/port')
+const IS_DOCKER = !existsSync('/dev/port')
 
 const EC_STATUS_COMMAND_PORT_ADDRESS = 0x66
 const EC_DATA_PORT_ADDRESS = 0x62
