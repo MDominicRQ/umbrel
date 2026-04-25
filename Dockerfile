@@ -32,13 +32,13 @@ COPY --from=base packages/ui/ .
 # This is a workaround for the upstream architecture where UI imports from backend
 COPY --from=base packages/umbreld/source/modules/server/trpc/common.ts /umbreld/source/modules/server/trpc/common.ts
 
-# Add missing transitive dependencies that are used directly in UI code
-# @codemirror/state is used in text-viewer/index.tsx but not listed as direct dependency
-RUN pnpm add @codemirror/state
-
 # Install the dependencies
 RUN rm -rf node_modules || true
 RUN pnpm install
+
+# Add missing transitive dependencies that are used directly in UI code
+# These codemirror packages are imported directly but not listed as dependencies
+RUN pnpm add @codemirror/state @codemirror/view @codemirror/commands @codemirror/language
 
 # Build the app
 RUN pnpm run build
