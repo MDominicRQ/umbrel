@@ -29,7 +29,7 @@ import {
 	waitForSystemTime,
 	reboot,
 } from './modules/system/system.js'
-import {cleanupFactoryResetBackups} from './modules/system/factory-reset.js'
+import {cleanupFactoryResetBackups} from './modules/factory-reset.js'
 
 type StoreSchema = {
 	version: string

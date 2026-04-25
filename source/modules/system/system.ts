@@ -7,7 +7,7 @@ import {$} from 'execa'
 import fse from 'fs-extra'
 import PQueue from 'p-queue'
 
-import type Umbreld from '../index.js'
+import type Umbreld from '../../index.js'
 
 import getDirectorySize from '../utilities/get-directory-size.js'
 

@@ -6,7 +6,7 @@ import {$} from 'execa'
 import pRetry from 'p-retry'
 import semver from 'semver'
 
-import randomToken from '../../modules/utilities/random-token.js'
+import randomToken from '../utilities/random-token.js'
 import type Umbreld from '../../index.js'
 import appEnvironment from './legacy-compat/app-environment.js'
 import type {AppSettings} from './schema.js'
