@@ -18,14 +18,6 @@ export default class User {
 	}
 
 	async start() {
-		// Auto-create Docker user with visible password if no user exists
-		if (!(await this.exists())) {
-			const randomDigits = Math.floor(1000 + Math.random() * 9000)
-			const password = `umbrel${randomDigits}`
-			this.logger.log(`Creating default user "admin" with password: ${password}`)
-			await this.register('admin', password, 'en')
-		}
-
 		this.logger.log('Starting user')
 	}
 
