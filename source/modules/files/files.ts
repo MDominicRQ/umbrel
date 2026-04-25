@@ -717,7 +717,9 @@ export default class Files {
 			const file = await fse.lstat(await this.virtualToSystemPath(virtualPath))
 			isFile = file.isFile()
 			isDirectory = file.isDirectory()
-		} catch {}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+		}
 
 		// Start with all operations
 		const operations = new Set(ALL_OPERATIONS)
@@ -895,7 +897,15 @@ export default class Files {
 		// e.g:
 		// /Home/symlink-to-root/etc/passwd
 		const resolvedBase = (await fse.realpath(basePath)).toLowerCase()
-		const resolvedPath = (await fse.realpath(systemPath)).toLowerCase()
+		let resolvedPath: string
+		try {
+			resolvedPath = (await fse.realpath(systemPath)).toLowerCase()
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+				return systemPath
+			}
+			throw error
+		}
 		if (!resolvedPath.startsWith(resolvedBase)) {
 			throw new Error(`[escapes-base] '${virtualPath}' escapes '${basePath}'`)
 		}
