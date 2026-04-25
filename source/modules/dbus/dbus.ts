@@ -44,7 +44,7 @@ export default class Dbus {
 			await new Promise((resolve, reject) => {
 				const bus = dbus.systemBus()
 				bus.on('error', (error) => {
-					this.logger.warn(`D-Bus connection error: ${error.message}`)
+					this.logger.log(`D-Bus connection error: ${error.message}`)
 				})
 				bus
 					.getService('org.freedesktop.systemd1')
@@ -67,7 +67,7 @@ export default class Dbus {
 					})
 			})
 		} catch (error) {
-			this.logger.warn('D-Bus system bus unavailable, disk event listeners not attached')
+			this.logger.log('D-Bus system bus unavailable, disk event listeners not attached')
 		}
 	}
 

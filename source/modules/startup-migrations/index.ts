@@ -42,7 +42,7 @@ class Migration {
 		try {
 			isSymbolicLink = (await fse.lstat(osPersistentOverlayPath)).isSymbolicLink()
 		} catch (error) {
-			this.logger.warn(`Failed to lstat OS overlay path, skipping Mender to Rugix state migration: ${error}`)
+			this.logger.log(`Failed to lstat OS overlay path, skipping Mender to Rugix state migration: ${error}`)
 			return {reboot: false}
 		}
 		// TODO: Check with Maxi how safe this is. If there's any scenario where Rugix won't migrate the symlink overlay
