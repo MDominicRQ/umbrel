@@ -28,6 +28,10 @@ WORKDIR /app
 # Copy the package.json and package-lock.json
 COPY --from=base packages/ui/ .
 
+# Copy the tRPC common file that UI imports via relative path
+# This is a workaround for the upstream architecture where UI imports from backend
+COPY --from=base packages/umbreld/source/modules/server/trpc/common.ts /umbreld/source/modules/server/trpc/common.ts
+
 # Install the dependencies
 RUN rm -rf node_modules || true
 RUN pnpm install
