@@ -42,8 +42,11 @@ export default class Dbus {
 		// Attach event handler to systemd service events
 		try {
 			await new Promise((resolve, reject) => {
-				dbus
-					.systemBus()
+				const bus = dbus.systemBus()
+				bus.on('error', (error) => {
+					this.logger.warn(`D-Bus connection error: ${error.message}`)
+				})
+				bus
 					.getService('org.freedesktop.systemd1')
 					.getInterface('/org/freedesktop/systemd1', 'org.freedesktop.systemd1.Manager', (error, manager) => {
 						if (error) return reject(error)
