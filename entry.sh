@@ -61,6 +61,27 @@ if [[ "$mount" != "/"* ]]; then
   error "Please bind the /data folder to an absolute path!" && exit 19
 fi
 
+# Create fake nmcli wrapper to prevent "spawn nmcli ENOENT" errors in Docker
+# NetworkManager is not available inside Docker containers
+mkdir -p /usr/local/bin
+cat > /usr/local/bin/nmcli << 'NMCLI_EOF'
+#!/bin/sh
+# Fake nmcli wrapper for Docker - NetworkManager not available
+# Returns appropriate exit codes and empty output for wifi queries
+case "$1" in
+  device)
+    echo "DEVICE" && exit 0
+    ;;
+  radio)
+    echo "WIFI-HW-AVAILABLE" && exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+NMCLI_EOF
+chmod +x /usr/local/bin/nmcli
+
 # Mirror external folder to local filesystem
 if [[ "$mount" != "/data" ]]; then
   mkdir -p "$mount"

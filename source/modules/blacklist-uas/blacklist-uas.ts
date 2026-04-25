@@ -96,8 +96,9 @@ export default async function blacklistUASDriver() {
 		// Docker-incompatible: rugix-ctrl is not available in Docker - wrapped in try-catch
 		try {
 			await $`rugix-ctrl system commit`
-		} catch {
-			// Ignore rugix-ctrl errors in case it fails
+		} catch (error) {
+			// Ignore rugix-ctrl errors in case it fails (e.g., tool not available in Docker)
+			console.log(`Failed to commit OS partition: ${(error as Error).message} - skipping`)
 		}
 		await fse.writeFile(justDidRebootFile, cmdline)
 		await $`reboot`

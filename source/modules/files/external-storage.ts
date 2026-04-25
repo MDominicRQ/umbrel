@@ -93,6 +93,10 @@ class ExternalStorage {
 		return false
 
   }
+
+	getExternalDevicesWithVirtualMountPoints(): string[] {
+		return []
+	}
 }
 
 export default ExternalStorage
