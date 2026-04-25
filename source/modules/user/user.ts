@@ -19,6 +19,18 @@ export default class User {
 
 	async start() {
 		this.logger.log('Starting user')
+
+		// Auto-create default user for Docker environments
+		if (!await this.exists()) {
+			const isDocker = await fse.pathExists('/.dockerenv').catch(() => false)
+			if (isDocker) {
+				this.logger.log('No user found, creating default Docker user')
+				const defaultUsername = 'umbrel'
+				const defaultPassword = Math.random().toString(36).slice(-12)
+				await this.register(defaultUsername, defaultPassword, 'en')
+				this.logger.log(`Created default Docker user: ${defaultUsername} / ${defaultPassword}`)
+			}
+		}
 	}
 
 	async stop() {
