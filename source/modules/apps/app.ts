@@ -14,7 +14,7 @@ import FileStore from '../utilities/file-store.js'
 import {fillSelectedDependencies} from '../utilities/dependencies.js'
 import type Umbreld from '../../index.js'
 import {validateManifest, type AppSettings} from './schema.js'
-import appScript from './legacy-compat/app-script.js'
+import appScript from './legacy-compat/app-script-wrapper.js'
 
 async function readYaml(path: string) {
 	return yaml.load(await fse.readFile(path, 'utf8'))

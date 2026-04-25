@@ -31,6 +31,10 @@ export function getResetStatus() {
 	return resetStatus
 }
 
+export function cleanupFactoryResetBackups() {
+	return
+}
+
 export async function performReset(umbreld: Umbreld) {
 
 	setResetStatus({running: true, progress: 5, description: 'Resetting...', error: false})

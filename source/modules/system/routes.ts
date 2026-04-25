@@ -7,8 +7,8 @@ import {$} from 'execa'
 import fse from 'fs-extra'
 import stripAnsi from 'strip-ansi'
 
-import {performReset} from './factory-reset.js'
-import {getUpdateStatus, performUpdate, getLatestRelease} from './update.js'
+import {performReset} from '../factory-reset.js'
+import {getUpdateStatus, performUpdate, getLatestRelease} from '../update.js'
 import {
 	getCpuTemperature,
 	getSystemDiskUsage,
