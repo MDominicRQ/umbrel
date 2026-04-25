@@ -710,6 +710,11 @@ export default class Files {
 
 	// Get allowed operations for a given path
 	async getAllowedOperations(virtualPath: string): Promise<FileOperation[]> {
+		// Root path `/` doesn't map to a system path, so we handle it specially
+		if (virtualPath === '/') {
+			return [...ALL_OPERATIONS]
+		}
+
 		// Get file status
 		let isFile = false
 		let isDirectory = false
