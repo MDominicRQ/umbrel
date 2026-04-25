@@ -219,15 +219,16 @@ export default class Umbreld {
 		}
 
 		// Initialise modules
+		// All module startup errors are non-fatal to prevent one failing module from crashing the entire system
 		await Promise.all([
-			this.user.start(),
-			this.files.start(),
-			this.hardware.start(),
-			this.apps.start(),
-			this.appStore.start(),
-			this.dbus.start(),
-			this.server.start(),
-			this.systemNg.start(),
+			this.user.start().catch((error) => this.logger.error('Failed to start user module', error)),
+			this.files.start().catch((error) => this.logger.error('Failed to start files module', error)),
+			this.hardware.start().catch((error) => this.logger.error('Failed to start hardware module', error)),
+			this.apps.start().catch((error) => this.logger.error('Failed to start apps module', error)),
+			this.appStore.start().catch((error) => this.logger.error('Failed to start app store module', error)),
+			this.dbus.start().catch((error) => this.logger.error('Failed to start dbus module', error)),
+			this.server.start().catch((error) => this.logger.error('Failed to start server module', error)),
+			this.systemNg.start().catch((error) => this.logger.error('Failed to start system-ng module', error)),
 		])
 
 		// Start backups last because it depends on files

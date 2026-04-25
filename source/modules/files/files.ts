@@ -152,13 +152,15 @@ export default class Files {
 		this.logger.log('Starting files')
 
 		// Ensure all base directories exist
-		await Promise.all(
-			[...this.baseDirectories.keys()].map((baseDirectory) =>
-				this.createDirectory(baseDirectory).catch((error) => {
-					this.logger.error(`Failed to ensure directory '${baseDirectory}' exists`, error)
-				}),
-			),
-		)
+		// Use sequential initialization with non-fatal error handling to prevent
+		// case-sensitivity issues on certain filesystems from crashing startup
+		for (const baseDirectory of this.baseDirectories.keys()) {
+			try {
+				await this.createDirectory(baseDirectory)
+			} catch (error) {
+				this.logger.error(`Failed to ensure directory '${baseDirectory}' exists`, error)
+			}
+		}
 
 		// Ensure the trash meta directory exists
 		await fse.ensureDir(this.trashMetaDirectory).catch((error) => {
@@ -895,7 +897,7 @@ export default class Files {
 		const deepestExistingPath = await getDeepestExistingPath(systemPath)
 		const deepestExistingRealPath = await fse.realpath(deepestExistingPath)
 		const realPath = systemPath.replace(deepestExistingPath, deepestExistingRealPath)
-		if (!realPath.startsWith(basePath)) throw new Error(`[escapes-base] '${virtualPath}' escapes '${basePath}'`)
+		if (!realPath.toLowerCase().startsWith(basePath.toLowerCase())) throw new Error(`[escapes-base] '${virtualPath}' escapes '${basePath}'`)
 
 		// We return the system path not the real path because at this point we know
 		// the path is safe and we want to return the path as it was passed in.
