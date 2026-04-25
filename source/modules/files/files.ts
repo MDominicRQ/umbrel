@@ -894,10 +894,9 @@ export default class Files {
 		// escaping the base directory if a symlink is in the path.
 		// e.g:
 		// /Home/symlink-to-root/etc/passwd
-		const deepestExistingPath = await getDeepestExistingPath(systemPath)
-		const deepestExistingRealPath = await fse.realpath(deepestExistingPath)
-		const realPath = systemPath.replace(deepestExistingPath, deepestExistingRealPath)
-		if (!realPath.toLowerCase().startsWith(basePath.toLowerCase())) {
+		const resolvedBase = (await fse.realpath(basePath)).toLowerCase()
+		const resolvedPath = (await fse.realpath(systemPath)).toLowerCase()
+		if (!resolvedPath.startsWith(resolvedBase)) {
 			throw new Error(`[escapes-base] '${virtualPath}' escapes '${basePath}'`)
 		}
 
