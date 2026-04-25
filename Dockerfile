@@ -9,7 +9,11 @@ FROM --platform=$BUILDPLATFORM scratch AS base
 ARG VERSION_ARG="0.0"
 ADD https://github.com/getumbrel/umbrel.git#${VERSION_ARG} /
 
-# Apply custom patches
+# Remove upstream's pre-compiled JavaScript files so our TypeScript patches
+# take precedence. The upstream repo has .js files that would override our .ts
+RUN find /packages/umbreld -name "*.js" -type f -delete 2>/dev/null || true
+
+# Apply custom patches - these .ts files will now be used instead of any .js
 COPY source /packages/umbreld/source
 
 #########################################################################
