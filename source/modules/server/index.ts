@@ -116,14 +116,10 @@ class Server {
 						if (forwardedHost) {
 							const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost
 							const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : (forwardedProto || 'https')
-							const externalOrigin = `${proto}://${host}`
-							sources.push(externalOrigin)
-							const wsProto = proto === 'https' ? 'wss' : 'ws'
-							sources.push(`${wsProto}://${host}`)
-							if (proto === 'https') {
-								sources.push(`https://${host}`)
-								sources.push(`wss://${host}`)
-							}
+							sources.push(`http://${host}`)
+							sources.push(`https://${host}`)
+							sources.push(`ws://${host}`)
+							sources.push(`wss://${host}`)
 						}
 						return sources
 					},
