@@ -262,6 +262,6 @@ export default router({
 	// This endpoint is public so it can be used on the login screen
 	language: publicProcedure.query(async ({ctx}) => {
 		const user = await ctx.user.get()
-		return user?.language ?? null
+		return user?.language ?? 'en'
 	}),
 })
