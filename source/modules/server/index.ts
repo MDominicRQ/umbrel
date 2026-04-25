@@ -102,8 +102,13 @@ class Server {
 		this.app.use(
 			helmet.contentSecurityPolicy({
 				directives: {
-					scriptSrc: this.umbreld.developmentMode ? ["'self'", "'unsafe-inline'"] : null,
-					imgSrc: ['*', 'blob:'],
+					defaultSrc: ["'self'"],
+					scriptSrc: this.umbreld.developmentMode ? ["'self'", "'unsafe-inline'"] : ["'self'"],
+					styleSrc: ["'self'", "'unsafe-inline'"],
+					imgSrc: ["'self'", 'data:', 'blob:'],
+					fontSrc: ["'self'", 'data:'],
+					objectSrc: ["'none'],
+					frameSrc: ["'none'"],
 					connectSrc: (req, _res) => {
 						const sources = ["'self'", 'https://apps.umbrel.com']
 						const forwardedHost = req.headers['x-forwarded-host']
@@ -113,13 +118,16 @@ class Server {
 							const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : (forwardedProto || 'https')
 							const externalOrigin = `${proto}://${host}`
 							sources.push(externalOrigin)
-							// Add WebSocket variant
 							const wsProto = proto === 'https' ? 'wss' : 'ws'
 							sources.push(`${wsProto}://${host}`)
+							if (proto === 'https') {
+								sources.push(`https://${host}`)
+								sources.push(`wss://${host}`)
+							}
 						}
 						return sources
 					},
-					upgradeInsecureRequests: null,
+					upgradeInsecureRequests: this.umbreld.developmentMode ? null : true,
 				},
 			}),
 		)
