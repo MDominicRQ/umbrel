@@ -486,3 +486,30 @@ export async function clearStaticIp(umbreld: Umbreld, mac: string): Promise<void
 	// Static IP clearing is not applicable in Docker
 	umbreld.logger.log('clearStaticIp: skipped (not applicable in Docker)')
 }
+
+// Missing upstream exports - Docker stubs
+
+export async function restoreHostname(umbreld: Umbreld): Promise<void> {
+	// Hostname restoration is not applicable in Docker
+	umbreld.logger.log('restoreHostname: skipped (not applicable in Docker)')
+}
+
+export async function setupPiCpuGovernor(umbreld: Umbreld): Promise<void> {
+	// CPU governor setup is not applicable in Docker
+	umbreld.logger.log('setupPiCpuGovernor: skipped (not applicable in Docker)')
+}
+
+export async function restoreWiFi(umbreld: Umbreld): Promise<void> {
+	// WiFi restoration is not applicable in Docker
+	umbreld.logger.log('restoreWiFi: skipped (not applicable in Docker)')
+}
+
+export async function restoreStaticIp(umbreld: Umbreld): Promise<void> {
+	// Static IP restoration is not applicable in Docker
+	umbreld.logger.log('restoreStaticIp: skipped (not applicable in Docker)')
+}
+
+export async function waitForSystemTime(umbreld: Umbreld, timeout: number): Promise<void> {
+	// System time waiting is not applicable in Docker
+	umbreld.logger.log('waitForSystemTime: skipped (not applicable in Docker)')
+}
