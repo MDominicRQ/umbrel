@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: dockurr/umbrel:latest
+    image: umbrel-os:local
     container_name: umbrel
     pid: host
     ports:
