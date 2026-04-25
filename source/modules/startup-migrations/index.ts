@@ -32,7 +32,19 @@ class Migration {
 	async finalizeMenderToRugixStateMigration() {
 		const osPersistentOverlayPath = '/data/umbrel-os'
 
-		const isSymbolicLink = (await fse.lstat(osPersistentOverlayPath)).isSymbolicLink()
+		const pathExists = await fse.pathExists(osPersistentOverlayPath)
+		if (!pathExists) {
+			this.logger.log('OS overlay path does not exist, skipping Mender to Rugix state migration')
+			return {reboot: false}
+		}
+
+		let isSymbolicLink = false
+		try {
+			isSymbolicLink = (await fse.lstat(osPersistentOverlayPath)).isSymbolicLink()
+		} catch (error) {
+			this.logger.warn(`Failed to lstat OS overlay path, skipping Mender to Rugix state migration: ${error}`)
+			return {reboot: false}
+		}
 		// TODO: Check with Maxi how safe this is. If there's any scenario where Rugix won't migrate the symlink overlay
 		// into a real directory overlay then this can result in an infinite boot loop.
 		if (!isSymbolicLink) return {reboot: false}
