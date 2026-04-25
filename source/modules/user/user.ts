@@ -19,18 +19,6 @@ export default class User {
 
 	async start() {
 		this.logger.log('Starting user')
-
-		// Auto-create default user for Docker environments
-		if (!await this.exists()) {
-			const isDocker = await fse.pathExists('/.dockerenv').catch(() => false)
-			if (isDocker) {
-				this.logger.log('No user found, creating default Docker user')
-				const defaultUsername = 'umbrel'
-				const defaultPassword = Math.random().toString(36).slice(-12)
-				await this.register(defaultUsername, defaultPassword, 'en')
-				this.logger.log(`Created default Docker user: ${defaultUsername} / ${defaultPassword}`)
-			}
-		}
 	}
 
 	async stop() {
@@ -121,28 +109,35 @@ export default class User {
 
 	// Register a new user
 	async register(name: string, password: string, language: string) {
-		// Check the user hasn't already signed up
-		if (await this.exists()) {
-			throw new Error('Attempted to register when user is already registered')
-		}
+		try {
+			// Check the user hasn't already signed up
+			if (await this.exists()) {
+				throw new Error('Attempted to register when user is already registered')
+			}
 
-		// Save the user
-		await this.setName(name)
-		await this.setLanguage(language)
-		// We can do this a cleaner way if we refactor widgets into a proper module
-		await this.#umbreld.store.set('widgets', ['umbrel:files-favorites', 'umbrel:storage', 'umbrel:system-stats'])
-		return this.setPassword(password)
+			// Save the user
+			await this.setName(name)
+			await this.setLanguage(language)
+			// We can do this a cleaner way if we refactor widgets into a proper module
+			await this.#umbreld.store.set('widgets', ['umbrel:files-favorites', 'umbrel:storage', 'umbrel:system-stats'])
+			return this.setPassword(password)
+		} catch (error) {
+			this.logger.error('Failed to register user', error)
+		}
 	}
 
 	// Validate a password against the stored hash
 	async validatePassword(password: string) {
-		// Get hashed password
 		const hashedPassword = await this.#store.get('user.hashedPassword')
 
-		// Validate credentials
-		const validPassword = hashedPassword && (await bcrypt.compare(password, hashedPassword))
+		if (!hashedPassword) return false
 
-		return validPassword
+		try {
+			return await bcrypt.compare(password, hashedPassword)
+		} catch (error) {
+			this.logger.error('Password validation error', error)
+			return false
+		}
 	}
 
 	// Check if 2FA is enabled
