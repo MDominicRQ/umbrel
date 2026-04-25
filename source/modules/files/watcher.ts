@@ -53,18 +53,25 @@ export default class Watcher {
 		// Set system inotify limits
 		// https://facebook.github.io/watchman/docs/install#linux-inotify-limits
 		this.logger.log('Setting system inotify limits')
-		// How many root directories can be watched
-		await $`sysctl fs.inotify.max_user_instances=256`.catch((error) =>
-			this.logger.error(`Failed to set max user instances`, error),
-		)
-		// How many directories can be watched across all watched roots
-		await $`sysctl fs.inotify.max_user_watches=122404`.catch((error) =>
-			this.logger.error(`Failed to set max user watches`, error),
-		)
-		// How many events can be queued (smaller number = more likely to have notification overflow)
-		await $`sysctl fs.inotify.max_queued_events=16384`.catch((error) =>
-			this.logger.error(`Failed to set max queued events`, error),
-		)
+
+		// Skip sysctl calls in Docker where these operations are not permitted
+		const isDocker = await fse.pathExists('/.dockerenv').catch(() => false)
+		if (!isDocker) {
+			// How many root directories can be watched
+			await $`sysctl fs.inotify.max_user_instances=256`.catch((error) =>
+				this.logger.error(`Failed to set max user instances`, error),
+			)
+			// How many directories can be watched across all watched roots
+			await $`sysctl fs.inotify.max_user_watches=122404`.catch((error) =>
+				this.logger.error(`Failed to set max user watches`, error),
+			)
+			// How many events can be queued (smaller number = more likely to have notification overflow)
+			await $`sysctl fs.inotify.max_queued_events=16384`.catch((error) =>
+				this.logger.error(`Failed to set max queued events`, error),
+			)
+		} else {
+			this.logger.log('Skipping inotify sysctl settings in Docker environment')
+		}
 
 		await this.#setupListeners()
 

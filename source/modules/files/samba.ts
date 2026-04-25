@@ -58,6 +58,13 @@ export default class Samba {
 	async start() {
 		this.logger.log('Starting samba')
 
+		// Skip Samba setup in Docker where samba tools and config don't exist
+		const isDocker = await fse.pathExists('/.dockerenv').catch(() => false)
+		if (isDocker) {
+			this.logger.log('Skipping samba setup in Docker environment')
+			return
+		}
+
 		await this.applySharePassword().catch((error) => {
 			this.logger.error(`Failed to apply share password`, error)
 		})
@@ -80,6 +87,11 @@ export default class Samba {
 		this.logger.log('Stopping samba')
 		this.#removeFileChangeListener?.()
 		this.#removeExternalStorageChangeListener?.()
+
+		// Skip systemctl commands in Docker where they won't work
+		const isDocker = await fse.pathExists('/.dockerenv').catch(() => false)
+		if (isDocker) return
+
 		await $`systemctl stop smbd`.catch((error) => this.logger.error(`Failed to stop samba`, error))
 		await $`systemctl stop wsdd2`.catch((error) => this.logger.error(`Failed to stop wsdd2`, error))
 	}
@@ -105,6 +117,10 @@ export default class Samba {
 	}
 
 	async applyShares({excludePaths}: {excludePaths?: string[]} = {}) {
+		// Skip samba shares in Docker where samba is not available
+		const isDocker = await fse.pathExists('/.dockerenv').catch(() => false)
+		if (isDocker) return
+
 		const shares = await this.#get()
 
 		let config = SMB_CONFIG

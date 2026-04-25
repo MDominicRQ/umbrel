@@ -897,7 +897,9 @@ export default class Files {
 		const deepestExistingPath = await getDeepestExistingPath(systemPath)
 		const deepestExistingRealPath = await fse.realpath(deepestExistingPath)
 		const realPath = systemPath.replace(deepestExistingPath, deepestExistingRealPath)
-		if (!realPath.toLowerCase().startsWith(basePath.toLowerCase())) throw new Error(`[escapes-base] '${virtualPath}' escapes '${basePath}'`)
+		if (!realPath.toLowerCase().startsWith(basePath.toLowerCase())) {
+			throw new Error(`[escapes-base] '${virtualPath}' escapes '${basePath}'`)
+		}
 
 		// We return the system path not the real path because at this point we know
 		// the path is safe and we want to return the path as it was passed in.

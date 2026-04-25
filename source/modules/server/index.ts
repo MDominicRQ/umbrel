@@ -109,24 +109,33 @@ class Server {
 					fontSrc: ["'self'", 'data:'],
 					objectSrc: ["'none'"],
 					frameSrc: ["'none'"],
-					connectSrc: (req, _res) => {
-						const sources = ["'self'", 'https://apps.umbrel.com']
-						const forwardedHost = req.headers['x-forwarded-host']
-						const forwardedProto = req.headers['x-forwarded-proto']
-						if (forwardedHost) {
-							const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost
-							const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : (forwardedProto || 'https')
-							sources.push(`http://${host}`)
-							sources.push(`https://${host}`)
-							sources.push(`ws://${host}`)
-							sources.push(`wss://${host}`)
-						}
-						return sources
-					},
-					...( !this.umbreld.developmentMode && { upgradeInsecureRequests: null } ),
+					upgradeInsecureRequests: this.umbreld.developmentMode ? undefined : [],
 				},
 			}),
 		)
+
+		// Add dynamic connectSrc based on reverse proxy headers
+		this.app.use((request, response, next) => {
+			const forwardedHost = request.headers['x-forwarded-host']
+			const forwardedProto = request.headers['x-forwarded-proto']
+			if (forwardedHost) {
+				const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost
+				const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : (forwardedProto || 'https')
+				const dynamicSources = [
+					`http://${host}`,
+					`https://${host}`,
+					`ws://${host}`,
+					`wss://${host}`,
+				]
+				const currentCsp = response.get('Content-Security-Policy') || ''
+				const newCsp = currentCsp.replace(
+					"connect-src 'self' https://apps.umbrel.com",
+					`connect-src 'self' https://apps.umbrel.com ${dynamicSources.join(' ')}`,
+				)
+				response.set('Content-Security-Policy', newCsp)
+			}
+			next()
+		})
 		this.app.use(helmet.referrerPolicy({policy: 'no-referrer'}))
 		this.app.disable('x-powered-by')
 
