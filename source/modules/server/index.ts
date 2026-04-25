@@ -123,7 +123,7 @@ class Server {
 						}
 						return sources
 					},
-					upgradeInsecureRequests: !this.umbreld.developmentMode,
+					...( !this.umbreld.developmentMode && { upgradeInsecureRequests: [] } ),
 				},
 			}),
 		)
