@@ -9,7 +9,7 @@ import PQueue from 'p-queue'
 
 import type Umbreld from '../index.js'
 
-import getDirectorySize from './utilities/get-directory-size.js'
+import getDirectorySize from '../utilities/get-directory-size.js'
 
 export async function getCpuTemperature(): Promise<{
 	warning: 'normal' | 'warm' | 'hot'
@@ -70,6 +70,24 @@ export async function getSystemDiskUsage(umbreld: Umbreld): Promise<{size: numbe
 		size,
 		totalUsed: used,
 	}
+}
+
+type DiskUsageByPath = {
+	available: number
+}
+
+export async function getDiskUsageByPath(path: string): Promise<DiskUsageByPath> {
+	const fileSystemSize = await systemInformation.fsSize()
+	const df = await $`df -h ${path}`
+	const partition = df.stdout.split('\n').slice(-1)[0].split(' ')[0]
+	const filesystem = fileSystemSize.find((fs) => fs.fs === partition)
+
+	if (!filesystem) {
+		return {available: 0}
+	}
+
+	const {available} = filesystem
+	return {available}
 }
 
 export async function getDiskUsage(
@@ -426,4 +444,45 @@ const syncDnsQueue = new PQueue({concurrency: 1})
 // Update DNS configuration to match user settings
 export async function syncDns() {
 	return true
+}
+
+// Missing functions from upstream - stub implementations for Docker compatibility
+
+type NetworkInterface = {
+	name: string
+	ipAddress: string
+}
+
+export async function getNetworkInterfaces(umbreld: Umbreld): Promise<NetworkInterface[]> {
+	// Network interfaces are not available in Docker the same way
+	// Return empty array to prevent errors
+	return []
+}
+
+export async function getHostname(): Promise<string> {
+	const result = await $`hostname`
+	return result.stdout.trim()
+}
+
+export async function setHostname(umbreld: Umbreld, hostname: string): Promise<void> {
+	// Hostname setting is not applicable in Docker
+	umbreld.logger.log('setHostname: skipped (not applicable in Docker)')
+}
+
+export async function setStaticIp(
+	umbreld: Umbreld,
+	params: {mac: string; ip: string; subnetPrefix: number; gateway: string; dns: string[]},
+): Promise<void> {
+	// Static IP is not applicable in Docker
+	umbreld.logger.log('setStaticIp: skipped (not applicable in Docker)')
+}
+
+export async function confirmStaticIp(ip: string): Promise<boolean> {
+	// Static IP confirmation is not applicable in Docker
+	return true
+}
+
+export async function clearStaticIp(umbreld: Umbreld, mac: string): Promise<void> {
+	// Static IP clearing is not applicable in Docker
+	umbreld.logger.log('clearStaticIp: skipped (not applicable in Docker)')
 }
