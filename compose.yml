@@ -7,7 +7,7 @@ services:
     container_name: umbrel
     pid: host
     ports:
-      - 80:80
+      - 80
     volumes:
       - ./umbrel:/data
       - /var/run/docker.sock:/var/run/docker.sock
