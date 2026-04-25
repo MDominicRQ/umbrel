@@ -107,7 +107,7 @@ class Server {
 					styleSrc: ["'self'", "'unsafe-inline'"],
 					imgSrc: ["'self'", 'data:', 'blob:'],
 					fontSrc: ["'self'", 'data:'],
-					objectSrc: ["'none'],
+					objectSrc: ["'none'"],
 					frameSrc: ["'none'"],
 					connectSrc: (req, _res) => {
 						const sources = ["'self'", 'https://apps.umbrel.com']
