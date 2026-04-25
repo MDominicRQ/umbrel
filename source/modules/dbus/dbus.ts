@@ -2,8 +2,11 @@
 // cleaned up system module
 
 import dbus from '@homebridge/dbus-native'
+import {existsSync} from 'fs'
 import {throttle} from 'es-toolkit'
 import type Umbreld from '../../index.js'
+
+const IS_DOCKER = !existsSync('/run/rugix') || !existsSync('/var/run/dbus/system_bus_socket')
 
 export default class Dbus {
 	#umbreld: Umbreld
@@ -17,6 +20,11 @@ export default class Dbus {
 	}
 
 	async start() {
+		if (IS_DOCKER) {
+			this.logger.log('D-Bus not available in Docker, skipping')
+			return
+		}
+
 		this.logger.log('Starting dbus')
 
 		// Docker-incompatible: D-Bus system bus socket not available in Docker
@@ -27,6 +35,11 @@ export default class Dbus {
 	}
 
 	async addDiskEventListeners() {
+		if (IS_DOCKER) {
+			this.logger.log('D-Bus not available in Docker, skipping disk event listeners')
+			return
+		}
+
 		this.logger.log('Attaching disk event listeners')
 
 		// Create throttled event emitter since we often get lots of events at once
@@ -83,6 +96,7 @@ export default class Dbus {
 	}
 
 	async stop() {
+		if (IS_DOCKER) return
 		this.logger.log('Stopping dbus')
 		this.#removeDiskEventListeners?.()
 	}
