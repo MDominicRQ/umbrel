@@ -125,6 +125,7 @@ export default class User {
 		// Save the user
 		await this.setName(name)
 		await this.setLanguage(language)
+		await this.setTemperatureUnit('celsius')
 		// We can do this a cleaner way if we refactor widgets into a proper module
 		await this.#umbreld.store.set('widgets', ['umbrel:files-favorites', 'umbrel:storage', 'umbrel:system-stats'])
 		return this.setPassword(password)
