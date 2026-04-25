@@ -37,8 +37,8 @@ RUN rm -rf node_modules || true
 RUN pnpm install
 
 # Add missing transitive dependencies that are used directly in UI code
-# These codemirror packages are imported directly but not listed as dependencies
-RUN pnpm add @codemirror/state @codemirror/view @codemirror/commands @codemirror/language
+# These codemirror and lezer packages are imported directly but not listed as dependencies
+RUN pnpm add @codemirror/state @codemirror/view @codemirror/commands @codemirror/language @lezer/highlight @lezer/common @lezer/lr
 
 # Build the app
 RUN pnpm run build
