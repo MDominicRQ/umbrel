@@ -8,16 +8,18 @@ import {websocketLogger} from './websocket-logger.js'
 export const t = initTRPC.context<Context>().create({
 	// TODO: Add more context on why this is needed
 	// https://trpc.io/docs/server/error-formatting#adding-custom-formatting
-	errorFormatter(options) {
-		const {shape, error} = options
-		return {
-			...shape,
-			data: {
-				...shape.data,
-				zodError: error.code === 'BAD_REQUEST' && error.cause instanceof ZodError ? error.cause.flatten() : null,
-			},
-		}
-	},
+errorFormatter(options) {
+			const {shape, error} = options
+			return {
+				...shape,
+				message: error.message || 'Unknown error',
+				code: error.code || 'INTERNAL_SERVER_ERROR',
+				data: {
+					...shape.data,
+					zodError: error.code === 'BAD_REQUEST' && error.cause instanceof ZodError ? error.cause.flatten() : null,
+				},
+			}
+		},
 })
 export const router = t.router
 const baseProcedure = t.procedure.use(websocketLogger)

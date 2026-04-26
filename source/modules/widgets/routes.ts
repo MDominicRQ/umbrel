@@ -1,7 +1,7 @@
 import z from 'zod'
 import ms from 'ms'
 
-import {router, privateProcedure} from '../server/trpc/trpc.js'
+import {router, privateProcedure, publicProcedureWhenNoUserExists} from '../server/trpc/trpc.js'
 import {systemWidgets} from '../system/system-widgets.js'
 import {filesWidgets} from '../files/widgets.js'
 
@@ -19,7 +19,7 @@ function splitWidgetId(widgetId: string) {
 
 export default router({
 	// List enabled widgets
-	enabled: privateProcedure.query(async ({ctx}) => {
+	enabled: publicProcedureWhenNoUserExists.query(async ({ctx}) => {
 		const widgetIds = (await ctx.umbreld.store.get('widgets')) || []
 
 		return widgetIds
@@ -87,7 +87,7 @@ export default router({
 		}),
 
 	// Get live data for a widget
-	data: privateProcedure
+	data: publicProcedureWhenNoUserExists
 		.input(
 			z.object({
 				widgetId: z.string(),

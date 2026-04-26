@@ -1,9 +1,9 @@
 import z from 'zod'
 
-import {router, privateProcedure} from '../server/trpc/trpc.js'
+import {router, privateProcedure, publicProcedureWhenNoUserExists} from '../server/trpc/trpc.js'
 
 export const appStore = router({
-	registry: privateProcedure.query(async ({ctx}) => ctx.appStore.registry()),
+	registry: publicProcedureWhenNoUserExists.query(async ({ctx}) => ctx.appStore.registry()),
 
 	addRepository: privateProcedure
 		.input(
@@ -23,7 +23,7 @@ export const appStore = router({
 })
 
 export const apps = router({
-	list: privateProcedure.query(async ({ctx}) => {
+	list: publicProcedureWhenNoUserExists.query(async ({ctx}) => {
 		const apps = ctx.apps.instances
 		const torEnabled = await ctx.umbreld.store.get('torEnabled')
 
