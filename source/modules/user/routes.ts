@@ -71,8 +71,11 @@ export default router({
 	// Public method to check if a user exists
 	exists: publicProcedure.query(async ({ctx}) => {
 		try {
-			return await ctx.user.exists()
-		} catch {
+			const exists = await ctx.user.exists()
+			ctx.umbreld.logger.log(`user.exists returned: ${exists}`)
+			return exists
+		} catch (error) {
+			ctx.umbreld.logger.error(`user.exists error: ${error}`)
 			return false
 		}
 	}),
@@ -268,8 +271,11 @@ export default router({
 	wallpaper: publicProcedure.query(async ({ctx}) => {
 		try {
 			const user = await ctx.user.get()
-			return user?.wallpaper ?? (await getDefaultWallpaper())
-		} catch {
+			const wallpaper = user?.wallpaper ?? (await getDefaultWallpaper())
+			ctx.umbreld.logger.log(`wallpaper endpoint returned: ${wallpaper}`)
+			return wallpaper
+		} catch (error) {
+			ctx.umbreld.logger.error(`wallpaper endpoint error: ${error}`)
 			return getDefaultWallpaper()
 		}
 	}),
@@ -279,8 +285,11 @@ export default router({
 	language: publicProcedure.query(async ({ctx}) => {
 		try {
 			const user = await ctx.user.get()
-			return user?.language ?? 'en'
-		} catch {
+			const language = user?.language ?? 'en'
+			ctx.umbreld.logger.log(`language endpoint returned: ${language}`)
+			return language
+		} catch (error) {
+			ctx.umbreld.logger.error(`language endpoint error: ${error}`)
 			return 'en'
 		}
 	}),
