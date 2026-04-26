@@ -14,49 +14,54 @@ export default router({
 				limit: z.number().positive().default(100),
 			}),
 		)
-		.query(async ({ctx, input}) => {
-			const directoryListing = await ctx.umbreld.files.list(input.path)
-			const totalFiles = directoryListing.files.length
+			query(async ({ctx, input}) => {
+			try {
+				const directoryListing = await ctx.umbreld.files.list(input.path)
+				const totalFiles = directoryListing.files.length
 
-			// Sort the files
-			// Ensure numeric sort falls back to text sort if the numeric values are equal.
-			// This is to ensure deterministic ordering in the case where multiple files have
-			// the same size/date. If ordering becomes non-deterministic then pagination can break.
-			// We enable numeric sorting by name, e.g. 1.txt, 2.txt, 10.txt
-			const textSort = new Intl.Collator('en-US', {numeric: true})
-			directoryListing.files.sort((fileA, fileB) => {
-				const a = fileA[input.sortBy]
-				const b = fileB[input.sortBy]
-				if (typeof a === 'string' && typeof b === 'string') return textSort.compare(a, b)
-				if (typeof a === 'number' && typeof b === 'number') return a - b || textSort.compare(fileA.name, fileB.name)
-				return 0
-			})
+				// Sort the files
+				// Ensure numeric sort falls back to text sort if the numeric values are equal.
+				// This is to ensure deterministic ordering in the case where multiple files have
+				// the same size/date. If ordering becomes non-deterministic then pagination can break.
+				// We enable numeric sorting by name, e.g. 1.txt, 2.txt, 10.txt
+				const textSort = new Intl.Collator('en-US', {numeric: true})
+				directoryListing.files.sort((fileA, fileB) => {
+					const a = fileA[input.sortBy]
+					const b = fileB[input.sortBy]
+					if (typeof a === 'string' && typeof b === 'string') return textSort.compare(a, b)
+					if (typeof a === 'number' && typeof b === 'number') return a - b || textSort.compare(fileA.name, fileB.name)
+					return 0
+				})
 
-			// Handle sort order
-			if (input.sortOrder === 'descending') directoryListing.files.reverse()
+				// Handle sort order
+				if (input.sortOrder === 'descending') directoryListing.files.reverse()
 
-			// Paginate using cursor-style pagination with `lastFile` as the cursor.
-			// Unlike offset-based pagination, this ensures consistent results even if files are added, removed, or renamed, etc.
-			// as it starts after the last seen file rather than relying on fixed indices.
-			let startIndex = 0
-			if (input.lastFile) {
-				const lastFileIndex = directoryListing.files.findIndex((file) => file.name === input.lastFile)
-				// If lastFile found, start after it; otherwise start from beginning
-				startIndex = lastFileIndex !== -1 ? lastFileIndex + 1 : 0
-			}
+				// Paginate using cursor-style pagination with `lastFile` as the cursor.
+				// Unlike offset-based pagination, this ensures consistent results even if files are added, removed, or renamed, etc.
+				// as it starts after the last seen file rather than relying on fixed indices.
+				let startIndex = 0
+				if (input.lastFile) {
+					const lastFileIndex = directoryListing.files.findIndex((file) => file.name === input.lastFile)
+					// If lastFile found, start after it; otherwise start from beginning
+					startIndex = lastFileIndex !== -1 ? lastFileIndex + 1 : 0
+				}
 
-			// Get the paginated files
-			const paginatedFiles = directoryListing.files.slice(startIndex, startIndex + input.limit)
+				// Get the paginated files
+				const paginatedFiles = directoryListing.files.slice(startIndex, startIndex + input.limit)
 
-			// Determine if there are more files after this batch
-			const hasMore = startIndex + input.limit < totalFiles
+				// Determine if there are more files after this batch
+				const hasMore = startIndex + input.limit < totalFiles
 
-			return {
-				...directoryListing,
-				// overwrite the files with the paginated files
-				files: paginatedFiles,
-				totalFiles,
-				hasMore,
+				return {
+					...directoryListing,
+					// overwrite the files with the paginated files
+					files: paginatedFiles,
+					totalFiles,
+					hasMore,
+				}
+			} catch (error) {
+				ctx.umbreld.logger.error('files.list error', error)
+				return {files: [], totalFiles: 0, hasMore: false}
 			}
 		}),
 
@@ -135,7 +140,14 @@ export default router({
 
 	// Get view preferences
 	// Public only when no user exists for onboarding restore flow (returns defaults); private once a user exists
-	viewPreferences: publicProcedureWhenNoUserExists.query(async ({ctx}) => ctx.umbreld.files.getViewPreferences()),
+	viewPreferences: publicProcedureWhenNoUserExists.query(async ({ctx}) => {
+		try {
+			return await ctx.umbreld.files.getViewPreferences()
+		} catch (error) {
+			ctx.umbreld.logger.error('files.viewPreferences error', error)
+			return {view: 'list', sortBy: 'name', sortOrder: 'ascending'}
+		}
+	}),
 
 	// Update view preferences
 	updateViewPreferences: privateProcedure
@@ -191,9 +203,14 @@ export default router({
 		.mutation(async ({ctx, input}) => ctx.umbreld.files.externalStorage.formatExternalDevice(input)),
 
 	// Get external storage devices
-	externalDevices: publicProcedureWhenNoUserExists.query(async ({ctx}) =>
-		ctx.umbreld.files.externalStorage.getExternalDevicesWithVirtualMountPoints(),
-	),
+	externalDevices: publicProcedureWhenNoUserExists.query(async ({ctx}) => {
+		try {
+			return await ctx.umbreld.files.externalStorage.getExternalDevicesWithVirtualMountPoints()
+		} catch (error) {
+			ctx.umbreld.logger.error('files.externalDevices error', error)
+			return []
+		}
+	}),
 
 	// Unmount an external device
 	unmountExternalDevice: privateProcedure
@@ -218,9 +235,14 @@ export default router({
 		.query(async ({ctx, input}) => ctx.umbreld.files.search.search(input.query, input.maxResults)),
 
 	// List network shares
-	listNetworkShares: publicProcedureWhenNoUserExists.query(async ({ctx}) =>
-		ctx.umbreld.files.networkStorage.getShareInfo(),
-	),
+	listNetworkShares: publicProcedureWhenNoUserExists.query(async ({ctx}) => {
+		try {
+			return await ctx.umbreld.files.networkStorage.getShareInfo()
+		} catch (error) {
+			ctx.umbreld.logger.error('files.listNetworkShares error', error)
+			return []
+		}
+	}),
 
 	// Add a network share
 	addNetworkShare: publicProcedureWhenNoUserExists
@@ -232,7 +254,14 @@ export default router({
 				password: z.string(),
 			}),
 		)
-		.mutation(async ({ctx, input}) => ctx.umbreld.files.networkStorage.addShare(input)),
+		.mutation(async ({ctx, input}) => {
+			try {
+				return await ctx.umbreld.files.networkStorage.addShare(input)
+			} catch (error) {
+				ctx.umbreld.logger.error('files.addNetworkShare error', error)
+				throw error
+			}
+		}),
 
 	// Remove a network share
 	removeNetworkShare: privateProcedure
@@ -240,16 +269,26 @@ export default router({
 		.mutation(async ({ctx, input}) => ctx.umbreld.files.networkStorage.removeShare(input.mountPath)),
 
 	// Discover available network share servers
-	discoverNetworkShareServers: publicProcedureWhenNoUserExists.query(async ({ctx}) =>
-		ctx.umbreld.files.networkStorage.discoverServers(),
-	),
+	discoverNetworkShareServers: publicProcedureWhenNoUserExists.query(async ({ctx}) => {
+		try {
+			return await ctx.umbreld.files.networkStorage.discoverServers()
+		} catch (error) {
+			ctx.umbreld.logger.error('files.discoverNetworkShareServers error', error)
+			return []
+		}
+	}),
 
 	// Discover shares for a given samba server
 	discoverNetworkSharesOnServer: publicProcedureWhenNoUserExists
 		.input(z.object({host: z.string(), username: z.string(), password: z.string()}))
-		.query(async ({ctx, input}) =>
-			ctx.umbreld.files.networkStorage.discoverSharesOnServer(input.host, input.username, input.password),
-		),
+		.query(async ({ctx, input}) => {
+			try {
+				return await ctx.umbreld.files.networkStorage.discoverSharesOnServer(input.host, input.username, input.password)
+			} catch (error) {
+				ctx.umbreld.logger.error('files.discoverNetworkSharesOnServer error', error)
+				return []
+			}
+		}),
 
 	// Checks if the given network address is an Umbrel device
 	isServerAnUmbrelDevice: privateProcedure

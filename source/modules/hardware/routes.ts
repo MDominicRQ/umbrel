@@ -9,12 +9,24 @@ const internalStorage = router({
 
 const raid = router({
 	// Check status of initial RAID setup boot process
-	checkInitialRaidSetupStatus: publicProcedure.query(async ({ctx}) =>
-		ctx.umbreld.hardware.raid.checkInitialRaidSetupStatus(),
-	),
+	checkInitialRaidSetupStatus: publicProcedure.query(async ({ctx}) => {
+		try {
+			return await ctx.umbreld.hardware.raid.checkInitialRaidSetupStatus()
+		} catch (error) {
+			console.error('checkInitialRaidSetupStatus error:', error)
+			return false
+		}
+	}),
 
 	// Check if RAID mount failed during boot
-	checkRaidMountFailure: publicProcedure.query(async ({ctx}) => ctx.umbreld.hardware.raid.checkRaidMountFailure()),
+	checkRaidMountFailure: publicProcedure.query(async ({ctx}) => {
+		try {
+			return await ctx.umbreld.hardware.raid.checkRaidMountFailure()
+		} catch (error) {
+			console.error('checkRaidMountFailure error:', error)
+			return false
+		}
+	}),
 
 	// Get details about why RAID mount failed
 	checkRaidMountFailureDevices: publicProcedureWhenNoUserExists.query(async ({ctx}) =>

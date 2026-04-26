@@ -61,7 +61,10 @@ export default class FileStore<T extends Serializable> {
 			const data = this.#parser.decode(rawData)
 
 			// If we get a result, set the store value
-			if (data) store = data as T
+			// Ensure data is a valid object, not null/undefined/primitive/array
+			if (data && typeof data === 'object' && !Array.isArray(data)) {
+				store = data as T
+			}
 		} catch (error) {
 			// Prevent errors if the file doesn't exist, we'll just use the default value
 			if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error

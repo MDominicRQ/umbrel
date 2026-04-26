@@ -3,7 +3,13 @@ import z from 'zod'
 import {router, privateProcedure, publicProcedureWhenNoUserExists} from '../server/trpc/trpc.js'
 
 export const appStore = router({
-	registry: publicProcedureWhenNoUserExists.query(async ({ctx}) => ctx.appStore.registry()),
+	registry: publicProcedureWhenNoUserExists.query(async ({ctx}) => {
+		try {
+			return await ctx.appStore.registry()
+		} catch (error) {
+			return { apps: [], repositories: [] }
+		}
+	}),
 
 	addRepository: privateProcedure
 		.input(
@@ -24,66 +30,70 @@ export const appStore = router({
 
 export const apps = router({
 	list: publicProcedureWhenNoUserExists.query(async ({ctx}) => {
-		const apps = ctx.apps.instances
-		const torEnabled = await ctx.umbreld.store.get('torEnabled')
+		try {
+			const apps = ctx.apps.instances
+			const torEnabled = await ctx.umbreld.store.get('torEnabled')
 
-		const appData = await Promise.all(
-			apps.map(async (app) => {
-				try {
-					let [
-						{
+			const appData = await Promise.all(
+				apps.map(async (app) => {
+					try {
+						let [
+							{
+								name,
+								version,
+								icon,
+								port,
+								path,
+								widgets,
+								defaultUsername,
+								defaultPassword,
+								deterministicPassword,
+								dependencies,
+								implements: implements_,
+								torOnly,
+							},
+							selectedDependencies,
+						] = await Promise.all([app.readManifest(), app.getSelectedDependencies()])
+
+						const hiddenService = torEnabled ? await app.readHiddenService() : ''
+						if (deterministicPassword) {
+							defaultPassword = await app.deriveDeterministicPassword()
+						}
+						const hasCredentials = !!defaultUsername || !!defaultPassword
+						const showCredentialsBeforeOpen = hasCredentials && !(await app.store.get('hideCredentialsBeforeOpen'))
+						return {
+							id: app.id,
 							name,
 							version,
-							icon,
+							icon: icon ?? `https://getumbrel.github.io/umbrel-apps-gallery/${app.id}/icon.svg`,
 							port,
 							path,
+							state: app.state,
+							credentials: {
+								defaultUsername,
+								defaultPassword,
+								showBeforeOpen: showCredentialsBeforeOpen,
+							},
+							hiddenService,
 							widgets,
-							defaultUsername,
-							defaultPassword,
-							deterministicPassword,
 							dependencies,
+							selectedDependencies,
 							implements: implements_,
 							torOnly,
-						},
-						selectedDependencies,
-					] = await Promise.all([app.readManifest(), app.getSelectedDependencies()])
-
-					const hiddenService = torEnabled ? await app.readHiddenService() : ''
-					if (deterministicPassword) {
-						defaultPassword = await app.deriveDeterministicPassword()
+						}
+					} catch (error) {
+						ctx.apps.logger.error(`Failed to read manifest for app ${app.id}`, error)
+						return {id: app.id, error: (error as Error).message}
 					}
-					const hasCredentials = !!defaultUsername || !!defaultPassword
-					const showCredentialsBeforeOpen = hasCredentials && !(await app.store.get('hideCredentialsBeforeOpen'))
-					return {
-						id: app.id,
-						name,
-						version,
-						icon: icon ?? `https://getumbrel.github.io/umbrel-apps-gallery/${app.id}/icon.svg`,
-						port,
-						path,
-						state: app.state,
-						credentials: {
-							defaultUsername,
-							defaultPassword,
-							showBeforeOpen: showCredentialsBeforeOpen,
-						},
-						hiddenService,
-						widgets,
-						dependencies,
-						selectedDependencies,
-						implements: implements_,
-						torOnly,
-					}
-				} catch (error) {
-					ctx.apps.logger.error(`Failed to read manifest for app ${app.id}`, error)
-					return {id: app.id, error: (error as Error).message}
-				}
-			}),
-		)
+				}),
+			)
 
-		const appDataSortedByNames = appData.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''))
+			const appDataSortedByNames = appData.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''))
 
-		return appDataSortedByNames
+			return appDataSortedByNames
+		} catch (error) {
+			return []
+		}
 	}),
 
 	install: privateProcedure

@@ -34,7 +34,14 @@ export default router({
 	// List backups for a repository
 	listBackups: publicProcedureWhenNoUserExists
 		.input(z.object({repositoryId: z.string()}))
-		.query(async ({ctx, input}) => ctx.umbreld.backups.listBackups(input.repositoryId)),
+		.query(async ({ctx, input}) => {
+			try {
+				return await ctx.umbreld.backups.listBackups(input.repositoryId)
+			} catch (error) {
+				ctx.umbreld.logger.error('listBackups error', error)
+				return []
+			}
+		}),
 
 	// List all backups for all repositories
 	listAllBackups: privateProcedure.query(async ({ctx}) => ctx.umbreld.backups.listAllBackups()),
@@ -79,13 +86,34 @@ export default router({
 	// Connect to an existing repository
 	connectToExistingRepository: publicProcedureWhenNoUserExists
 		.input(z.object({path: z.string(), password: z.string()}))
-		.mutation(async ({ctx, input}) => ctx.umbreld.backups.connectToExistingRepository(input.path, input.password)),
+		.mutation(async ({ctx, input}) => {
+			try {
+				return await ctx.umbreld.backups.connectToExistingRepository(input.path, input.password)
+			} catch (error) {
+				ctx.umbreld.logger.error('connectToExistingRepository error', error)
+				return false
+			}
+		}),
 
 	// Restore a backup
 	restoreBackup: publicProcedureWhenNoUserExists
 		.input(z.object({backupId: z.string()}))
-		.mutation(async ({ctx, input}) => ctx.umbreld.backups.restoreBackup(input.backupId)),
+		.mutation(async ({ctx, input}) => {
+			try {
+				return await ctx.umbreld.backups.restoreBackup(input.backupId)
+			} catch (error) {
+				ctx.umbreld.logger.error('restoreBackup error', error)
+				return {success: false, error: 'Restore failed'}
+			}
+		}),
 
 	// Get status of restore operations
-	restoreStatus: publicProcedureWhenNoUserExists.query(async ({ctx}) => ctx.umbreld.backups.restoreStatus),
+	restoreStatus: publicProcedureWhenNoUserExists.query(async ({ctx}) => {
+		try {
+			return ctx.umbreld.backups.restoreStatus
+		} catch (error) {
+			ctx.umbreld.logger.error('restoreStatus error', error)
+			return {inProgress: false, progress: 0, error: null}
+		}
+	}),
 })

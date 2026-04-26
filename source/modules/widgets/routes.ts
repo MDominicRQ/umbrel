@@ -97,18 +97,22 @@ export default router({
 			const {appId, widgetName} = splitWidgetId(input.widgetId)
 			let widgetData: {[key: string]: any}
 
-			if (appId === 'umbrel') {
-				// This is an Umbrel widget
-				if (!(widgetName in umbrelWidgets)) throw new Error(`No widget named ${widgetName} found in Umbrel widgets`)
+			try {
+				if (appId === 'umbrel') {
+					// This is an Umbrel widget
+					if (!(widgetName in umbrelWidgets)) throw new Error(`No widget named ${widgetName} found in Umbrel widgets`)
 
-				widgetData = await umbrelWidgets[widgetName as keyof typeof umbrelWidgets](ctx.umbreld)
-			} else {
-				// This is an app widget
-				widgetData = await ctx.apps.getApp(appId).getWidgetData(widgetName)
+					widgetData = await umbrelWidgets[widgetName as keyof typeof umbrelWidgets](ctx.umbreld)
+				} else {
+					// This is an app widget
+					widgetData = await ctx.apps.getApp(appId).getWidgetData(widgetName)
+				}
+
+				// Parse refresh time from human-readable string to milliseconds
+				widgetData.refresh = ms(widgetData.refresh)
+			} catch (error) {
+				widgetData = {}
 			}
-
-			// Parse refresh time from human-readable string to milliseconds
-			widgetData.refresh = ms(widgetData.refresh)
 
 			return widgetData
 		}),

@@ -24,7 +24,16 @@ export default router({
 	}),
 
 	// TODO: Refactor this into a subscription
-	migrationStatus: publicProcedureWhenNoUserExists.query(() => getMigrationStatus()),
+	migrationStatus: publicProcedureWhenNoUserExists.query(async () => {
+		try {
+			return await getMigrationStatus()
+		} catch (error) {
+			return {
+				status: 'idle',
+				externalDrive: { mounted: false, backingUp: false, restoring: false },
+			}
+		}
+	}),
 
 	migrate: privateProcedure.mutation(async ({ctx}) => {
 		const currentInstall = ctx.umbreld.dataDirectory
