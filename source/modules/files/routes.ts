@@ -14,7 +14,7 @@ export default router({
 				limit: z.number().positive().default(100),
 			}),
 		)
-			query(async ({ctx, input}) => {
+		query(async ({ctx, input}) => {
 			try {
 				const directoryListing = await ctx.umbreld.files.list(input.path)
 				const totalFiles = directoryListing.files.length
