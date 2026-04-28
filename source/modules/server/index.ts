@@ -55,6 +55,7 @@ class Server {
 	app?: express.Express
 	server?: http.Server
 	webSocketRouter = new Map<string, WebSocketServer>()
+	#appProxyCache = new Map<string, ReturnType<typeof createProxyMiddleware>>()
 
 	constructor({umbreld}: ServerOptions) {
 		this.umbreld = umbreld
@@ -89,6 +90,29 @@ class Server {
 		this.webSocketRouter.set(path, wss)
 	}
 
+	#getAppProxy(appId: string, port: number) {
+		const cacheKey = `${appId}:${port}`
+		if (!this.#appProxyCache.has(cacheKey)) {
+			this.#appProxyCache.set(
+				cacheKey,
+				createProxyMiddleware({
+					target: `http://app_proxy_${appId}:${port}`,
+					changeOrigin: true,
+					on: {
+						error: (err, _req, res) => {
+							this.logger.error(`App proxy error for ${appId}: ${(err as Error).message}`)
+							if (!(res as http.ServerResponse).headersSent) {
+								;(res as http.ServerResponse).writeHead(502, {'Content-Type': 'text/plain'})
+								res.end('App proxy unavailable')
+							}
+						},
+					},
+				}),
+			)
+		}
+		return this.#appProxyCache.get(cacheKey)!
+	}
+
 	async start() {
 		await this.getJwtSecret()
 
@@ -109,7 +133,8 @@ class Server {
 					fontSrc: ["'self'", 'data:'],
 					connectSrc: ["'self'", 'https://apps.umbrel.com'],
 					objectSrc: ["'none'"],
-					frameSrc: ["'none'"],
+					// Allow same-origin frames so apps work via /proxy/<appId>/
+					frameSrc: ["'self'"],
 					upgradeInsecureRequests: this.umbreld.developmentMode ? undefined : [],
 				},
 			}),
@@ -151,6 +176,23 @@ class Server {
 		this.server?.on('upgrade', async (request, socket, head) => {
 			try {
 				const {pathname, searchParams} = new URL(`https://localhost${request.url}`)
+
+				// Proxy WebSocket upgrades for installed apps
+				const appProxyMatch = pathname.match(/^\/proxy\/([^/]+)/)
+				if (appProxyMatch) {
+					const appId = appProxyMatch[1]
+					try {
+						const app = this.umbreld.apps.getApp(appId)
+						const {port} = await app.readManifest()
+						const proxy = this.#getAppProxy(appId, port)
+						;(proxy as any).upgrade(request, socket, head)
+					} catch (error) {
+						this.logger.error(`WS app proxy error for ${appId}`, error)
+						socket.destroy()
+					}
+					return
+				}
+
 				const wss = this.webSocketRouter.get(pathname)
 
 				if (!wss) {
@@ -171,6 +213,19 @@ class Server {
 
 		this.app.get('/manager-api/v1/system/update-status', (request, response) => {
 			response.json({state: 'success', progress: 100, description: '', updateTo: ''})
+		})
+
+		// Reverse proxy for installed apps: /proxy/:appId/* → app_proxy_<appId>:<port>
+		this.app.use('/proxy/:appId', async (request, response, next) => {
+			const {appId} = request.params
+			try {
+				const app = this.umbreld.apps.getApp(appId)
+				const {port} = await app.readManifest()
+				this.#getAppProxy(appId, port)(request, response, next)
+			} catch (error) {
+				this.logger.error(`App proxy setup error for ${appId}`, error)
+				response.status(404).json({error: 'App not found or not running'})
+			}
 		})
 
 		this.app.use('/trpc', trpcExpressHandler)

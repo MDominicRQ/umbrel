@@ -9,7 +9,7 @@ services:
     ports:
       - 80
     volumes:
-      - ./umbrel:/data
+      - umbrel_data:/data
       - /var/run/docker.sock:/var/run/docker.sock
     extra_hosts:
       - 'host.docker.internal:host-gateway'
@@ -22,3 +22,6 @@ services:
       - traefik.http.routers.n8n-umbrelos-oazure-186-websecure.middlewares=forzar-headers
       # 2. Le asignamos este middleware a tu router seguro (websecure)
       #- traefik.http.routers.n8numbrelos-oazure-186-websecure.middlewares=forzar-headers
+
+volumes:
+  umbrel_data:

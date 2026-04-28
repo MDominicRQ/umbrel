@@ -54,13 +54,20 @@ export const apps = router({
 					}
 					const hasCredentials = !!defaultUsername || !!defaultPassword
 					const showCredentialsBeforeOpen = hasCredentials && !(await app.store.get('hideCredentialsBeforeOpen'))
+
+					// Route apps through the umbreld reverse proxy so they work behind HTTPS/Traefik.
+					// The frontend constructs: http://<host>:<port><path>
+					// With proxy: http://<host>:80/proxy/<appId>/ (resolved as same-host relative path)
+					const serverPort = ctx.umbreld.server.port ?? ctx.umbreld.port
+					const proxyPath = `/proxy/${app.id}${path && path !== '/' ? path : '/'}`
+
 					return {
 						id: app.id,
 						name,
 						version,
 						icon: icon ?? `https://getumbrel.github.io/umbrel-apps-gallery/${app.id}/icon.svg`,
-						port,
-						path,
+						port: serverPort,
+						path: proxyPath,
 						state: app.state,
 						credentials: {
 							defaultUsername,
