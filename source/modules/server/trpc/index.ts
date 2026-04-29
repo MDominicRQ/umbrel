@@ -44,7 +44,11 @@ export const trpcExpressHandler = createExpressMiddleware({
 	router: appRouter,
 	createContext: createContextExpress,
 	onError({error, ctx}) {
-		ctx?.logger.error(`${ctx?.request?.method} ${ctx?.request?.path}`, error)
+		if (error.code === 'UNAUTHORIZED') {
+			ctx?.logger.verbose(`${ctx?.request?.method} ${ctx?.request?.path}`, error)
+		} else {
+			ctx?.logger.error(`${ctx?.request?.method} ${ctx?.request?.path}`, error)
+		}
 	},
 })
 
@@ -70,7 +74,16 @@ export const trpcWssHandler = ({
 			pongWaitMs: 5_000,
 		},
 		onError({error, ctx, path}) {
-			logger.error(`WS ${path}`, error)
+			const msg = (error as Error).message ?? ''
+			const isExpected =
+				error.code === 'UNAUTHORIZED' ||
+				msg.includes('Unsupported file type for thumbnail') ||
+				msg.includes('does-not-exist')
+			if (isExpected) {
+				logger.verbose(`WS ${path}`, error)
+			} else {
+				logger.error(`WS ${path}`, error)
+			}
 		},
 	})
 }

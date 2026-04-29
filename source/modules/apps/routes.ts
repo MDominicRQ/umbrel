@@ -27,6 +27,22 @@ export const apps = router({
 		const apps = ctx.apps.instances
 		const torEnabled = await ctx.umbreld.store.get('torEnabled')
 
+		// Determine the external port clients should use to reach this server.
+		// Traefik sets X-Forwarded-Port (preferred) or X-Forwarded-Proto so we can infer it.
+		const req = ctx.request
+		const fwdPort = req?.headers?.['x-forwarded-port']
+		const fwdProto = req?.headers?.['x-forwarded-proto']
+		const proto = Array.isArray(fwdProto) ? fwdProto[0] : (fwdProto ?? '')
+		let externalPort: number
+		if (fwdPort) {
+			const ps = Array.isArray(fwdPort) ? fwdPort[0] : fwdPort
+			externalPort = parseInt(ps, 10) || 80
+		} else if (proto === 'https') {
+			externalPort = 443
+		} else {
+			externalPort = 80
+		}
+
 		const appData = await Promise.all(
 			apps.map(async (app) => {
 				try {
@@ -56,7 +72,6 @@ export const apps = router({
 					const showCredentialsBeforeOpen = hasCredentials && !(await app.store.get('hideCredentialsBeforeOpen'))
 
 					// Route apps through the umbreld reverse proxy so they work behind HTTPS/Traefik.
-					// Omit port so the frontend uses the current page's origin (no redundant :80).
 					const proxyPath = `/proxy/${app.id}${path && path !== '/' ? path : '/'}`
 
 					return {
@@ -64,7 +79,7 @@ export const apps = router({
 						name,
 						version,
 						icon: icon ?? `https://getumbrel.github.io/umbrel-apps-gallery/${app.id}/icon.svg`,
-						port: 80,
+						port: externalPort,
 						path: proxyPath,
 						state: app.state,
 						credentials: {
