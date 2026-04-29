@@ -1,4 +1,5 @@
 import os from 'node:os'
+import {statfs} from 'node:fs/promises'
 
 import type Umbreld from '../../index.js'
 
@@ -77,4 +78,13 @@ export async function confirmStaticIp(_ip: string): Promise<boolean> {
 // Docker-safe stub: clearing static IP not supported in containers
 export async function clearStaticIp(_umbreld: Umbreld, _input: any): Promise<boolean> {
 	return true
+}
+
+// Return available disk space for the filesystem containing the given path
+export async function getDiskUsageByPath(path: string): Promise<{available: number; size: number; used: number}> {
+	const stats = await statfs(path)
+	const size = stats.blocks * stats.bsize
+	const available = stats.bavail * stats.bsize
+	const used = size - stats.bfree * stats.bsize
+	return {size, used, available}
 }
