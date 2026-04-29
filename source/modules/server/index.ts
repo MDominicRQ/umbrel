@@ -57,6 +57,11 @@ class Server {
 	webSocketRouter = new Map<string, WebSocketServer>()
 	#appProxyCache = new Map<string, ReturnType<typeof createProxyMiddleware>>()
 	#appTargetCache = new Map<string, string>()
+	// External port as seen by clients — updated from X-Forwarded-Port/Proto on every HTTP request
+	#externalPort = 80
+	get externalPort(): number {
+		return this.#externalPort
+	}
 
 	constructor({umbreld}: ServerOptions) {
 		this.umbreld = umbreld
@@ -172,10 +177,23 @@ class Server {
 			}),
 		)
 
-		// Add dynamic connectSrc based on reverse proxy headers
+		// Add dynamic connectSrc based on reverse proxy headers; also cache the external port
 		this.app.use((request, response, next) => {
 			const forwardedHost = request.headers['x-forwarded-host']
 			const forwardedProto = request.headers['x-forwarded-proto']
+			const forwardedPort = request.headers['x-forwarded-port']
+
+			// Update external port from forwarded headers so WS-transported tRPC calls can use it
+			if (forwardedPort) {
+				const ps = Array.isArray(forwardedPort) ? forwardedPort[0] : forwardedPort
+				const parsed = parseInt(ps, 10)
+				if (parsed > 0) this.#externalPort = parsed
+			} else if (forwardedProto) {
+				const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto
+				if (proto === 'https') this.#externalPort = 443
+				else if (proto === 'http') this.#externalPort = 80
+			}
+
 			if (forwardedHost) {
 				const host = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost
 				const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : (forwardedProto || 'https')
@@ -207,6 +225,20 @@ class Server {
 
 		this.server?.on('upgrade', async (request, socket, head) => {
 			try {
+				// Opportunistically capture the external port from upgrade request headers
+				// (ensures #externalPort is correct even before any plain HTTP request arrives)
+				const upgradeFwdPort = request.headers['x-forwarded-port']
+				const upgradeFwdProto = request.headers['x-forwarded-proto']
+				if (upgradeFwdPort) {
+					const ps = Array.isArray(upgradeFwdPort) ? upgradeFwdPort[0] : upgradeFwdPort
+					const parsed = parseInt(ps, 10)
+					if (parsed > 0) this.#externalPort = parsed
+				} else if (upgradeFwdProto) {
+					const proto = Array.isArray(upgradeFwdProto) ? upgradeFwdProto[0] : upgradeFwdProto
+					if (proto === 'https') this.#externalPort = 443
+					else if (proto === 'http') this.#externalPort = 80
+				}
+
 				const {pathname, searchParams} = new URL(`https://localhost${request.url}`)
 
 				// Proxy WebSocket upgrades for installed apps

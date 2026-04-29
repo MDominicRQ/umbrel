@@ -27,21 +27,8 @@ export const apps = router({
 		const apps = ctx.apps.instances
 		const torEnabled = await ctx.umbreld.store.get('torEnabled')
 
-		// Determine the external port clients should use to reach this server.
-		// Traefik sets X-Forwarded-Port (preferred) or X-Forwarded-Proto so we can infer it.
-		const req = ctx.request
-		const fwdPort = req?.headers?.['x-forwarded-port']
-		const fwdProto = req?.headers?.['x-forwarded-proto']
-		const proto = Array.isArray(fwdProto) ? fwdProto[0] : (fwdProto ?? '')
-		let externalPort: number
-		if (fwdPort) {
-			const ps = Array.isArray(fwdPort) ? fwdPort[0] : fwdPort
-			externalPort = parseInt(ps, 10) || 80
-		} else if (proto === 'https') {
-			externalPort = 443
-		} else {
-			externalPort = 80
-		}
+		// Use the external port cached by Server from forwarded headers (works for WS-transported calls too)
+		const externalPort = ctx.server?.externalPort ?? 80
 
 		const appData = await Promise.all(
 			apps.map(async (app) => {
@@ -51,7 +38,7 @@ export const apps = router({
 							name,
 							version,
 							icon,
-							port,
+							port: _port,
 							path,
 							widgets,
 							defaultUsername,
