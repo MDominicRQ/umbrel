@@ -56,6 +56,7 @@ class Server {
 	server?: http.Server
 	webSocketRouter = new Map<string, WebSocketServer>()
 	#appProxyCache = new Map<string, ReturnType<typeof createProxyMiddleware>>()
+	#appTargetCache = new Map<string, string>()
 
 	constructor({umbreld}: ServerOptions) {
 		this.umbreld = umbreld
@@ -90,17 +91,48 @@ class Server {
 		this.webSocketRouter.set(path, wss)
 	}
 
-	#getAppProxy(appId: string, port: number) {
-		const cacheKey = `${appId}:${port}`
-		if (!this.#appProxyCache.has(cacheKey)) {
+	// Resolve the correct proxy target for an app:
+	// - Apps WITH app_proxy service: target is the app_proxy container
+	// - Apps WITHOUT app_proxy service: target is the app's main service container directly
+	async #resolveAppTarget(appId: string): Promise<string> {
+		if (this.#appTargetCache.has(appId)) {
+			return this.#appTargetCache.get(appId)!
+		}
+
+		const app = this.umbreld.apps.getApp(appId)
+		const {port} = await app.readManifest()
+		let target = `http://app_proxy_${appId}:${port}`
+
+		try {
+			const compose = await app.readCompose()
+			const services = Object.keys(compose.services ?? {})
+			const hasAppProxy = services.includes('app_proxy')
+
+			if (!hasAppProxy) {
+				const systemServices = new Set(['app_proxy', 'tor_proxy', 'i2p_daemon'])
+				const mainService = services.find((s) => !systemServices.has(s)) ?? services[0]
+				if (mainService) {
+					target = `http://${appId}_${mainService}_1:${port}`
+				}
+			}
+		} catch {
+			// compose unreadable, fall back to app_proxy target
+		}
+
+		this.#appTargetCache.set(appId, target)
+		return target
+	}
+
+	#getAppProxy(target: string) {
+		if (!this.#appProxyCache.has(target)) {
 			this.#appProxyCache.set(
-				cacheKey,
+				target,
 				createProxyMiddleware({
-					target: `http://app_proxy_${appId}:${port}`,
+					target,
 					changeOrigin: true,
 					on: {
 						error: (err, _req, res) => {
-							this.logger.error(`App proxy error for ${appId}: ${(err as Error).message}`)
+							this.logger.error(`App proxy error (${target}): ${(err as Error).message}`)
 							if (!(res as http.ServerResponse).headersSent) {
 								;(res as http.ServerResponse).writeHead(502, {'Content-Type': 'text/plain'})
 								res.end('App proxy unavailable')
@@ -110,7 +142,7 @@ class Server {
 				}),
 			)
 		}
-		return this.#appProxyCache.get(cacheKey)!
+		return this.#appProxyCache.get(target)!
 	}
 
 	async start() {
@@ -182,9 +214,8 @@ class Server {
 				if (appProxyMatch) {
 					const appId = appProxyMatch[1]
 					try {
-						const app = this.umbreld.apps.getApp(appId)
-						const {port} = await app.readManifest()
-						const proxy = this.#getAppProxy(appId, port)
+						const target = await this.#resolveAppTarget(appId)
+						const proxy = this.#getAppProxy(target)
 						;(proxy as any).upgrade(request, socket, head)
 					} catch (error) {
 						this.logger.error(`WS app proxy error for ${appId}`, error)
@@ -206,7 +237,13 @@ class Server {
 					wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request))
 				}
 			} catch (error) {
-				this.logger.error(`Error upgrading websocket`, error)
+				// JWT auth errors are expected from pre-login browser connections — log at verbose only
+				const msg = (error as Error).message ?? ''
+				if (msg.includes('jwt') || msg.includes('JsonWebTokenError') || msg.includes('invalid signature')) {
+					this.logger.verbose(`WS auth rejected: ${msg}`)
+				} else {
+					this.logger.error(`Error upgrading websocket`, error)
+				}
 				socket.destroy()
 			}
 		})
@@ -215,13 +252,12 @@ class Server {
 			response.json({state: 'success', progress: 100, description: '', updateTo: ''})
 		})
 
-		// Reverse proxy for installed apps: /proxy/:appId/* → app_proxy_<appId>:<port>
+		// Reverse proxy for installed apps: /proxy/:appId/* → app container
 		this.app.use('/proxy/:appId', async (request, response, next) => {
 			const {appId} = request.params
 			try {
-				const app = this.umbreld.apps.getApp(appId)
-				const {port} = await app.readManifest()
-				this.#getAppProxy(appId, port)(request, response, next)
+				const target = await this.#resolveAppTarget(appId)
+				this.#getAppProxy(target)(request, response, next)
 			} catch (error) {
 				this.logger.error(`App proxy setup error for ${appId}`, error)
 				response.status(404).json({error: 'App not found or not running'})
