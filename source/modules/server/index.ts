@@ -96,9 +96,10 @@ class Server {
 		this.webSocketRouter.set(path, wss)
 	}
 
-	// Resolve the correct proxy target for an app:
-	// - Apps WITH app_proxy service: target is the app_proxy container
-	// - Apps WITHOUT app_proxy service: target is the app's main service container directly
+	// Resolve the correct proxy target for an app.
+	// Always bypasses the Umbrel app_proxy (which relies on a legacy auth manager we don't run)
+	// and connects directly to the main app service container.
+	// For services that use host/container network mode, falls back to host.docker.internal.
 	async #resolveAppTarget(appId: string): Promise<string> {
 		if (this.#appTargetCache.has(appId)) {
 			return this.#appTargetCache.get(appId)!
@@ -106,22 +107,30 @@ class Server {
 
 		const app = this.umbreld.apps.getApp(appId)
 		const {port} = await app.readManifest()
+		// Fallback: the app_proxy hostname alias (set by app-script via APP_PROXY_HOSTNAME)
 		let target = `http://app_proxy_${appId}:${port}`
 
 		try {
 			const compose = await app.readCompose()
 			const services = Object.keys(compose.services ?? {})
-			const hasAppProxy = services.includes('app_proxy')
+			const systemServices = new Set(['app_proxy', 'tor_proxy', 'i2p_daemon'])
+			const mainService = services.find((s) => !systemServices.has(s)) ?? services[0]
 
-			if (!hasAppProxy) {
-				const systemServices = new Set(['app_proxy', 'tor_proxy', 'i2p_daemon'])
-				const mainService = services.find((s) => !systemServices.has(s)) ?? services[0]
-				if (mainService) {
+			if (mainService) {
+				const serviceConfig = (compose.services as any)[mainService] ?? {}
+				const networkMode: string = serviceConfig.network_mode ?? ''
+
+				if (networkMode === 'host' || networkMode.startsWith('service:') || networkMode.startsWith('container:')) {
+					// Shared or host network stack: container is not in umbrel_main_network.
+					// Reach it via the Docker host gateway (compose.yml maps host.docker.internal).
+					target = `http://host.docker.internal:${port}`
+				} else {
+					// Normal bridge networking: resolve by the container name set by patchComposeFile.
 					target = `http://${appId}_${mainService}_1:${port}`
 				}
 			}
 		} catch {
-			// compose unreadable, fall back to app_proxy target
+			// compose unreadable — keep the app_proxy hostname fallback
 		}
 
 		this.#appTargetCache.set(appId, target)
