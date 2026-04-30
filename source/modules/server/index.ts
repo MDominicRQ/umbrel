@@ -137,14 +137,24 @@ class Server {
 		return target
 	}
 
-	#getAppProxy(target: string) {
-		if (!this.#appProxyCache.has(target)) {
+	#getAppProxy(appId: string, target: string) {
+		const cacheKey = `${appId}|${target}`
+		if (!this.#appProxyCache.has(cacheKey)) {
+			const prefix = `/proxy/${appId}`
 			this.#appProxyCache.set(
-				target,
+				cacheKey,
 				createProxyMiddleware({
 					target,
 					changeOrigin: true,
 					on: {
+						proxyRes: (proxyRes) => {
+							const location = proxyRes.headers.location
+							if (typeof location === 'string' && location.startsWith('/') && !location.startsWith('//')) {
+								if (!location.startsWith(`${prefix}/`) && location !== prefix) {
+									proxyRes.headers.location = `${prefix}${location}`
+								}
+							}
+						},
 						error: (err, _req, res) => {
 							this.logger.error(`App proxy error (${target}): ${(err as Error).message}`)
 							if (!(res as http.ServerResponse).headersSent) {
@@ -156,7 +166,7 @@ class Server {
 				}),
 			)
 		}
-		return this.#appProxyCache.get(target)!
+		return this.#appProxyCache.get(cacheKey)!
 	}
 
 	async start() {
@@ -256,7 +266,7 @@ class Server {
 					const appId = appProxyMatch[1]
 					try {
 						const target = await this.#resolveAppTarget(appId)
-						const proxy = this.#getAppProxy(target)
+						const proxy = this.#getAppProxy(appId, target)
 						;(proxy as any).upgrade(request, socket, head)
 					} catch (error) {
 						this.logger.error(`WS app proxy error for ${appId}`, error)
@@ -298,7 +308,7 @@ class Server {
 			const {appId} = request.params
 			try {
 				const target = await this.#resolveAppTarget(appId)
-				this.#getAppProxy(target)(request, response, next)
+				this.#getAppProxy(appId, target)(request, response, next)
 			} catch (error) {
 				this.logger.error(`App proxy setup error for ${appId}`, error)
 				response.status(404).json({error: 'App not found or not running'})
