@@ -3,7 +3,7 @@ import process from 'node:process'
 import {promisify} from 'node:util'
 import {fileURLToPath} from 'node:url'
 import {dirname, join} from 'node:path'
-import {createGzip, createGunzip, createInflate, createBrotliDecompress} from 'node:zlib'
+import {createGzip} from 'node:zlib'
 import {pipeline} from 'node:stream/promises'
 
 import {$} from 'execa'
@@ -12,7 +12,7 @@ import cookieParser from 'cookie-parser'
 import helmet from 'helmet'
 
 import {WebSocketServer} from 'ws'
-import {createProxyMiddleware} from 'http-proxy-middleware'
+import {createProxyMiddleware, responseInterceptor} from 'http-proxy-middleware'
 
 import getOrCreateFile from '../utilities/get-or-create-file.js'
 import randomToken from '../utilities/random-token.js'
@@ -137,32 +137,76 @@ class Server {
 		return target
 	}
 
-	// rewriteLocation: true  → path-based proxy: buffers HTML responses, rewrites root-relative
-	//                          URLs in attributes and injects a fetch/XHR/WS interceptor script.
+	// rewriteLocation: true  → path-based proxy: uses responseInterceptor to buffer HTML,
+	//                          rewrite root-relative URLs, and inject a fetch/XHR/WS shim.
 	// rewriteLocation: false → subdomain proxy: pass-through (root-relative URLs work natively).
 	#getAppProxy(appId: string, target: string, {rewriteLocation = false} = {}) {
 		const cacheKey = `${appId}|${target}|${rewriteLocation}`
 		if (!this.#appProxyCache.has(cacheKey)) {
+			const prefix = `/proxy/${appId}`
+
+			// Minified script injected into HTML pages — rewrites root-relative fetch/XHR/WS calls
+			// so that JS apps whose server URL logic uses window.location.origin still work through
+			// a path-based proxy (they'd otherwise call /api/... instead of /proxy/${appId}/api/...).
+			const injectScript =
+				`<script>(function(){` +
+				`var p=${JSON.stringify(prefix)};` +
+				`function rw(u){if(typeof u==='string'&&u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;return u;}` +
+				`var oF=window.fetch;window.fetch=function(u,i){return oF.call(this,rw(u),i);};` +
+				`var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};` +
+				`var oW=window.WebSocket;` +
+				`window.WebSocket=function(u,q){if(typeof u==='string'&&u.charCodeAt(0)===47)u=(location.protocol==='https:'?'wss:':'ws:')+'//'+(location.host)+rw(u);return q?new oW(u,q):new oW(u);};` +
+				`Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;` +
+				`})();</script>`
+
 			this.#appProxyCache.set(
 				cacheKey,
 				createProxyMiddleware({
 					target,
 					changeOrigin: true,
-					// When rewriting, we handle the response ourselves so we can buffer + patch HTML.
+					// responseInterceptor requires selfHandleResponse: true so the middleware doesn't
+					// pipe the upstream response before we can inspect and rewrite it.
 					selfHandleResponse: rewriteLocation,
 					on: {
 						proxyRes: rewriteLocation
-							? (proxyRes, _req, res) => {
-									this.#rewriteHtmlResponse(appId, proxyRes as http.IncomingMessage, res as http.ServerResponse).catch(
-										(err) => {
-											this.logger.error(`HTML rewrite error for ${appId}: ${(err as Error).message}`)
-											if (!(res as http.ServerResponse).headersSent) {
-												;(res as http.ServerResponse).writeHead(502, {'Content-Type': 'text/plain'})
-												;(res as http.ServerResponse).end('Proxy error')
-											}
-										},
+							? responseInterceptor(async (buffer, proxyRes) => {
+									// Rewrite Location header so redirects stay within /proxy/:appId
+									const loc = proxyRes.headers.location
+									if (
+										typeof loc === 'string' &&
+										loc.startsWith('/') &&
+										!loc.startsWith('//') &&
+										!loc.startsWith(`${prefix}/`) &&
+										loc !== prefix
+									) {
+										proxyRes.headers.location = `${prefix}${loc}`
+									}
+
+									const contentType = (proxyRes.headers['content-type'] as string) ?? ''
+									if (!contentType.includes('text/html')) return buffer
+
+									// Strip CSP header — it would block our injected inline script
+									delete proxyRes.headers['content-security-policy']
+
+									let body = buffer.toString('utf8')
+
+									// Inject network shim as the first child of <head>
+									if (/<head[\s>]/i.test(body)) {
+										body = body.replace(/<head([\s>])/i, `<head$1${injectScript}`)
+									} else {
+										body = injectScript + body
+									}
+
+									// Rewrite root-relative paths in HTML attributes.
+									// (?!\/|proxy\/) skips protocol-relative (//...) and already-proxied paths.
+									body = body.replace(
+										/((?:href|src|action|poster|data-src|data-href)=["'])\/(?!\/|proxy\/)/g,
+										`$1${prefix}/`,
 									)
-								}
+									body = body.replace(/(\burl\(["']?)\/(?!\/|proxy\/)/g, `$1${prefix}/`)
+
+									return body
+								})
 							: undefined,
 						error: (err, _req, res) => {
 							this.logger.error(`App proxy error (${target}): ${(err as Error).message}`)
@@ -176,79 +220,6 @@ class Server {
 			)
 		}
 		return this.#appProxyCache.get(cacheKey)!
-	}
-
-	async #rewriteHtmlResponse(appId: string, proxyRes: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-		const prefix = `/proxy/${appId}`
-
-		// Copy headers so we can mutate them
-		const headers: Record<string, string | string[] | undefined> = {...proxyRes.headers}
-
-		// Rewrite Location header for any redirect response
-		if (typeof headers.location === 'string') {
-			const loc = headers.location
-			if (loc.startsWith('/') && !loc.startsWith('//') && !loc.startsWith(`${prefix}/`) && loc !== prefix) {
-				headers.location = `${prefix}${loc}`
-			}
-		}
-
-		const contentType = (headers['content-type'] as string) ?? ''
-		if (!contentType.includes('text/html')) {
-			// Non-HTML: forward as-is (with possibly rewritten Location)
-			res.writeHead(proxyRes.statusCode!, headers)
-			proxyRes.pipe(res)
-			return
-		}
-
-		// HTML: decompress → rewrite → send uncompressed
-		const encoding = (headers['content-encoding'] as string) ?? ''
-		let stream: NodeJS.ReadableStream = proxyRes
-		if (encoding === 'gzip') stream = proxyRes.pipe(createGunzip())
-		else if (encoding === 'deflate') stream = proxyRes.pipe(createInflate())
-		else if (encoding === 'br') stream = proxyRes.pipe(createBrotliDecompress())
-
-		const chunks: Buffer[] = []
-		for await (const chunk of stream) chunks.push(Buffer.from(chunk))
-		let body = Buffer.concat(chunks).toString('utf8')
-
-		// Script injected at the top of <head> — intercepts fetch/XHR/WebSocket so that
-		// root-relative API calls (/api/..., /Users/..., etc.) get the /proxy/:appId prefix.
-		// This is necessary because JS apps often construct URLs from window.location.origin
-		// without knowing they're behind a path-based reverse proxy.
-		const escapedPrefix = JSON.stringify(prefix) // safely quoted for inline JS
-		const injectScript =
-			`<script>(function(){` +
-			`var p=${escapedPrefix};` +
-			`function rw(u){if(typeof u==='string'&&u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;return u;}` +
-			`var oF=window.fetch;window.fetch=function(u,i){return oF.call(this,rw(u),i);};` +
-			`var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};` +
-			`var oW=window.WebSocket;` +
-			`window.WebSocket=function(u,q){if(typeof u==='string'&&u.charCodeAt(0)===47)u=(location.protocol==='https:'?'wss:':'ws:')+'//'+(location.host)+rw(u);return q?new oW(u,q):new oW(u);};` +
-			`Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;` +
-			`})();</script>`
-
-		// Inject before the first <head> tag (or prepend if none)
-		if (/<head[\s>]/i.test(body)) {
-			body = body.replace(/<head([\s>])/i, `<head$1${injectScript}`)
-		} else {
-			body = injectScript + body
-		}
-
-		// Rewrite root-relative paths in HTML attributes so static assets load via the proxy.
-		// (?!\/|proxy\/) skips protocol-relative (//...) and already-proxied (/proxy/...) paths.
-		body = body.replace(
-			/((?:href|src|action|poster|data-src|data-href)=["'])\/(?!\/|proxy\/)/g,
-			`$1${prefix}/`,
-		)
-		// CSS url() — quoted and unquoted variants
-		body = body.replace(/(\burl\(["']?)\/(?!\/|proxy\/)/g, `$1${prefix}/`)
-
-		delete headers['content-encoding'] // we decompressed
-		delete headers['content-length'] // body size changed
-		delete headers['content-security-policy'] // would block our injected script
-
-		res.writeHead(proxyRes.statusCode!, headers)
-		res.end(body)
 	}
 
 	async start() {
