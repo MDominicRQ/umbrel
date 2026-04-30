@@ -16,12 +16,9 @@ services:
     restart: always
     stop_grace_period: 1m
     labels:
-      # 1. Creamos un middleware llamado "forzar-headers" con tus datos
       - traefik.http.middlewares.forzar-headers.headers.customrequestheaders.X-Forwarded-Proto=https
       - traefik.http.middlewares.forzar-headers.headers.customrequestheaders.X-Forwarded-Host=os.dominic.pw
       - traefik.http.routers.n8n-umbrelos-oazure-186-websecure.middlewares=forzar-headers
-      # 2. Le asignamos este middleware a tu router seguro (websecure)
-      #- traefik.http.routers.n8numbrelos-oazure-186-websecure.middlewares=forzar-headers
 
 volumes:
   umbrel_data:

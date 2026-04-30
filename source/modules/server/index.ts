@@ -3,7 +3,7 @@ import process from 'node:process'
 import {promisify} from 'node:util'
 import {fileURLToPath} from 'node:url'
 import {dirname, join} from 'node:path'
-import {createGzip} from 'node:zlib'
+import {createGzip, createGunzip, createInflate, createBrotliDecompress} from 'node:zlib'
 import {pipeline} from 'node:stream/promises'
 
 import {$} from 'execa'
@@ -137,24 +137,33 @@ class Server {
 		return target
 	}
 
-	#getAppProxy(appId: string, target: string) {
-		const cacheKey = `${appId}|${target}`
+	// rewriteLocation: true  → path-based proxy: buffers HTML responses, rewrites root-relative
+	//                          URLs in attributes and injects a fetch/XHR/WS interceptor script.
+	// rewriteLocation: false → subdomain proxy: pass-through (root-relative URLs work natively).
+	#getAppProxy(appId: string, target: string, {rewriteLocation = false} = {}) {
+		const cacheKey = `${appId}|${target}|${rewriteLocation}`
 		if (!this.#appProxyCache.has(cacheKey)) {
-			const prefix = `/proxy/${appId}`
 			this.#appProxyCache.set(
 				cacheKey,
 				createProxyMiddleware({
 					target,
 					changeOrigin: true,
+					// When rewriting, we handle the response ourselves so we can buffer + patch HTML.
+					selfHandleResponse: rewriteLocation,
 					on: {
-						proxyRes: (proxyRes) => {
-							const location = proxyRes.headers.location
-							if (typeof location === 'string' && location.startsWith('/') && !location.startsWith('//')) {
-								if (!location.startsWith(`${prefix}/`) && location !== prefix) {
-									proxyRes.headers.location = `${prefix}${location}`
+						proxyRes: rewriteLocation
+							? (proxyRes, _req, res) => {
+									this.#rewriteHtmlResponse(appId, proxyRes as http.IncomingMessage, res as http.ServerResponse).catch(
+										(err) => {
+											this.logger.error(`HTML rewrite error for ${appId}: ${(err as Error).message}`)
+											if (!(res as http.ServerResponse).headersSent) {
+												;(res as http.ServerResponse).writeHead(502, {'Content-Type': 'text/plain'})
+												;(res as http.ServerResponse).end('Proxy error')
+											}
+										},
+									)
 								}
-							}
-						},
+							: undefined,
 						error: (err, _req, res) => {
 							this.logger.error(`App proxy error (${target}): ${(err as Error).message}`)
 							if (!(res as http.ServerResponse).headersSent) {
@@ -169,8 +178,86 @@ class Server {
 		return this.#appProxyCache.get(cacheKey)!
 	}
 
+	async #rewriteHtmlResponse(appId: string, proxyRes: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+		const prefix = `/proxy/${appId}`
+
+		// Copy headers so we can mutate them
+		const headers: Record<string, string | string[] | undefined> = {...proxyRes.headers}
+
+		// Rewrite Location header for any redirect response
+		if (typeof headers.location === 'string') {
+			const loc = headers.location
+			if (loc.startsWith('/') && !loc.startsWith('//') && !loc.startsWith(`${prefix}/`) && loc !== prefix) {
+				headers.location = `${prefix}${loc}`
+			}
+		}
+
+		const contentType = (headers['content-type'] as string) ?? ''
+		if (!contentType.includes('text/html')) {
+			// Non-HTML: forward as-is (with possibly rewritten Location)
+			res.writeHead(proxyRes.statusCode!, headers)
+			proxyRes.pipe(res)
+			return
+		}
+
+		// HTML: decompress → rewrite → send uncompressed
+		const encoding = (headers['content-encoding'] as string) ?? ''
+		let stream: NodeJS.ReadableStream = proxyRes
+		if (encoding === 'gzip') stream = proxyRes.pipe(createGunzip())
+		else if (encoding === 'deflate') stream = proxyRes.pipe(createInflate())
+		else if (encoding === 'br') stream = proxyRes.pipe(createBrotliDecompress())
+
+		const chunks: Buffer[] = []
+		for await (const chunk of stream) chunks.push(Buffer.from(chunk))
+		let body = Buffer.concat(chunks).toString('utf8')
+
+		// Script injected at the top of <head> — intercepts fetch/XHR/WebSocket so that
+		// root-relative API calls (/api/..., /Users/..., etc.) get the /proxy/:appId prefix.
+		// This is necessary because JS apps often construct URLs from window.location.origin
+		// without knowing they're behind a path-based reverse proxy.
+		const escapedPrefix = JSON.stringify(prefix) // safely quoted for inline JS
+		const injectScript =
+			`<script>(function(){` +
+			`var p=${escapedPrefix};` +
+			`function rw(u){if(typeof u==='string'&&u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;return u;}` +
+			`var oF=window.fetch;window.fetch=function(u,i){return oF.call(this,rw(u),i);};` +
+			`var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};` +
+			`var oW=window.WebSocket;` +
+			`window.WebSocket=function(u,q){if(typeof u==='string'&&u.charCodeAt(0)===47)u=(location.protocol==='https:'?'wss:':'ws:')+'//'+(location.host)+rw(u);return q?new oW(u,q):new oW(u);};` +
+			`Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;` +
+			`})();</script>`
+
+		// Inject before the first <head> tag (or prepend if none)
+		if (/<head[\s>]/i.test(body)) {
+			body = body.replace(/<head([\s>])/i, `<head$1${injectScript}`)
+		} else {
+			body = injectScript + body
+		}
+
+		// Rewrite root-relative paths in HTML attributes so static assets load via the proxy.
+		// (?!\/|proxy\/) skips protocol-relative (//...) and already-proxied (/proxy/...) paths.
+		body = body.replace(
+			/((?:href|src|action|poster|data-src|data-href)=["'])\/(?!\/|proxy\/)/g,
+			`$1${prefix}/`,
+		)
+		// CSS url() — quoted and unquoted variants
+		body = body.replace(/(\burl\(["']?)\/(?!\/|proxy\/)/g, `$1${prefix}/`)
+
+		delete headers['content-encoding'] // we decompressed
+		delete headers['content-length'] // body size changed
+		delete headers['content-security-policy'] // would block our injected script
+
+		res.writeHead(proxyRes.statusCode!, headers)
+		res.end(body)
+	}
+
 	async start() {
 		await this.getJwtSecret()
+
+		// UMBREL_DOMAIN enables subdomain routing: each app served at ${appId}.${domain}
+		// This makes root-relative HTML/JS paths work correctly in all apps.
+		// Requires: DNS wildcard *.${domain} and a Traefik wildcard router (see compose.yml).
+		const umbreldDomain = process.env.UMBREL_DOMAIN?.toLowerCase().trim() || undefined
 
 		this.app = express()
 		this.server = http.createServer(this.app)
@@ -242,6 +329,29 @@ class Server {
 			next()
 		})
 
+		// Subdomain app routing — handles ${appId}.${umbreldDomain} HTTP requests.
+		// Must be registered before /proxy/:appId so subdomain requests are never redirected.
+		if (umbreldDomain) {
+			this.app.use(async (request, response, next) => {
+				const rawHost = request.headers['x-forwarded-host']
+				const host = (Array.isArray(rawHost) ? rawHost[0] : rawHost ?? '').toLowerCase().split(':')[0]
+				const suffix = `.${umbreldDomain}`
+				if (host.endsWith(suffix) && host !== umbreldDomain) {
+					const appId = host.slice(0, -suffix.length)
+					if (/^[a-z0-9][a-z0-9-]*$/.test(appId)) {
+						try {
+							const target = await this.#resolveAppTarget(appId)
+							return this.#getAppProxy(appId, target)(request, response, next)
+						} catch (error) {
+							this.logger.error(`Subdomain proxy error for ${appId}`, error)
+							return response.status(404).json({error: 'App not found'})
+						}
+					}
+				}
+				next()
+			})
+		}
+
 		this.server?.on('upgrade', async (request, socket, head) => {
 			try {
 				// Opportunistically capture the external port from upgrade request headers
@@ -260,13 +370,34 @@ class Server {
 
 				const {pathname, searchParams} = new URL(`https://localhost${request.url}`)
 
-				// Proxy WebSocket upgrades for installed apps
+				// Subdomain WebSocket proxy — handles WS connections from apps running on ${appId}.${umbreldDomain}
+				if (umbreldDomain) {
+					const upgradeFwdHost = request.headers['x-forwarded-host']
+					const upgradeHost = (Array.isArray(upgradeFwdHost) ? upgradeFwdHost[0] : upgradeFwdHost ?? '').toLowerCase().split(':')[0]
+					const suffix = `.${umbreldDomain}`
+					if (upgradeHost.endsWith(suffix) && upgradeHost !== umbreldDomain) {
+						const appId = upgradeHost.slice(0, -suffix.length)
+						if (/^[a-z0-9][a-z0-9-]*$/.test(appId)) {
+							try {
+								const target = await this.#resolveAppTarget(appId)
+								const proxy = this.#getAppProxy(appId, target)
+								;(proxy as any).upgrade(request, socket, head)
+							} catch (error) {
+								this.logger.error(`WS subdomain proxy error for ${appId}`, error)
+								socket.destroy()
+							}
+							return
+						}
+					}
+				}
+
+				// Proxy WebSocket upgrades for installed apps (path-based fallback when no umbreldDomain)
 				const appProxyMatch = pathname.match(/^\/proxy\/([^/]+)/)
 				if (appProxyMatch) {
 					const appId = appProxyMatch[1]
 					try {
 						const target = await this.#resolveAppTarget(appId)
-						const proxy = this.#getAppProxy(appId, target)
+						const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true})
 						;(proxy as any).upgrade(request, socket, head)
 					} catch (error) {
 						this.logger.error(`WS app proxy error for ${appId}`, error)
@@ -303,12 +434,17 @@ class Server {
 			response.json({state: 'success', progress: 100, description: '', updateTo: ''})
 		})
 
-		// Reverse proxy for installed apps: /proxy/:appId/* → app container
+		// App entry point: redirect to subdomain when UMBREL_DOMAIN is set (universal fix),
+		// otherwise fall back to path-based proxy with Location rewriting.
 		this.app.use('/proxy/:appId', async (request, response, next) => {
 			const {appId} = request.params
+			if (umbreldDomain) {
+				const proto = this.#externalPort === 443 ? 'https' : 'http'
+				return response.redirect(302, `${proto}://${appId}.${umbreldDomain}${request.url}`)
+			}
 			try {
 				const target = await this.#resolveAppTarget(appId)
-				this.#getAppProxy(appId, target)(request, response, next)
+				this.#getAppProxy(appId, target, {rewriteLocation: true})(request, response, next)
 			} catch (error) {
 				this.logger.error(`App proxy setup error for ${appId}`, error)
 				response.status(404).json({error: 'App not found or not running'})
