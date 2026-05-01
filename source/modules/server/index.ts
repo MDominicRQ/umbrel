@@ -145,17 +145,32 @@ class Server {
 		if (!this.#appProxyCache.has(cacheKey)) {
 			const prefix = `/proxy/${appId}`
 
-			// Injected into every HTML page — rewrites root-relative fetch/XHR/WS URLs so that
-			// apps using window.location.origin still work through a path-based proxy.
+			// Injected into every HTML page.
+			// rw()   — rewrites root-relative (/foo) AND absolute same-origin (https://host/foo) URLs.
+			// rwws() — same logic for ws:/wss: WebSocket URLs.
+			// Also patches history.pushState/replaceState so SPA navigation stays within the proxy path.
 			const injectScript =
 				`<script>(function(){` +
 				`var p=${JSON.stringify(prefix)};` +
-				`function rw(u){if(typeof u==='string'&&u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;return u;}` +
+				`var org=location.origin;` +
+				`var wso=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host;` +
+				`function rw(u){` +
+				`if(typeof u!=='string')return u;` +
+				`if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;` +
+				`if(u.startsWith(org+'/')&&!u.startsWith(org+p+'/'))return org+p+u.slice(org.length);` +
+				`return u;}` +
+				`function rwws(u){` +
+				`if(typeof u!=='string')return u;` +
+				`if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return wso+p+u;` +
+				`if(u.startsWith(wso+'/')&&!u.startsWith(wso+p+'/'))return wso+p+u.slice(wso.length);` +
+				`return u;}` +
 				`var oF=window.fetch;window.fetch=function(u,i){return oF.call(this,rw(u),i);};` +
 				`var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};` +
 				`var oW=window.WebSocket;` +
-				`window.WebSocket=function(u,q){if(typeof u==='string'&&u.charCodeAt(0)===47)u=(location.protocol==='https:'?'wss:':'ws:')+'//'+(location.host)+rw(u);return q?new oW(u,q):new oW(u);};` +
+				`window.WebSocket=function(u,q){return q?new oW(rwws(u),q):new oW(rwws(u));};` +
 				`Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;` +
+				`var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};` +
+				`var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};` +
 				`})();</script>`
 
 			this.#appProxyCache.set(
@@ -433,6 +448,9 @@ class Server {
 		// App entry point: redirect to subdomain when UMBREL_DOMAIN is set (universal fix),
 		// otherwise fall back to path-based proxy with Location rewriting.
 		this.app.use('/proxy/:appId', async (request, response, next) => {
+			// Strip Helmet's CSP — it would block the injected inline URL-rewriting script
+			// and all inline scripts from the proxied app.
+			response.removeHeader('Content-Security-Policy')
 			const {appId} = request.params
 			if (umbreldDomain) {
 				const proto = this.#externalPort === 443 ? 'https' : 'http'
