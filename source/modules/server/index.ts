@@ -7,6 +7,7 @@ import {createGzip} from 'node:zlib'
 import {pipeline} from 'node:stream/promises'
 
 import {$} from 'execa'
+import Docker from 'dockerode'
 import express from 'express'
 import cookieParser from 'cookie-parser'
 import helmet from 'helmet'
@@ -55,8 +56,9 @@ class Server {
 	app?: express.Express
 	server?: http.Server
 	webSocketRouter = new Map<string, WebSocketServer>()
+	#docker = new Docker({socketPath: '/var/run/docker.sock'})
 	#appProxyCache = new Map<string, ReturnType<typeof createProxyMiddleware>>()
-	#appTargetCache = new Map<string, string>()
+	#appTargetCache = new Map<string, {target: string; expiresAt: number}>()
 	// External port as seen by clients — updated from X-Forwarded-Port/Proto on every HTTP request
 	#externalPort = 80
 	get externalPort(): number {
@@ -96,45 +98,83 @@ class Server {
 		this.webSocketRouter.set(path, wss)
 	}
 
-	// Resolve the correct proxy target for an app.
-	// Always bypasses the Umbrel app_proxy (which relies on a legacy auth manager we don't run)
-	// and connects directly to the main app service container.
-	// For services that use host/container network mode, falls back to host.docker.internal.
+	#cacheAppTarget(appId: string, target: string) {
+		this.#appTargetCache.set(appId, {target, expiresAt: Date.now() + 60_000})
+	}
+
+	// Resolve the correct proxy target for an app using dockerode to get the container's
+	// actual IP in umbrel_main_network. Never falls back to app_proxy (requires an auth
+	// manager at 10.21.21.4:3006 that we don't run). Cache result for 60 s so container
+	// restarts (which may change the IP) are reflected promptly.
 	async #resolveAppTarget(appId: string): Promise<string> {
-		if (this.#appTargetCache.has(appId)) {
-			return this.#appTargetCache.get(appId)!
+		const cached = this.#appTargetCache.get(appId)
+		if (cached && Date.now() < cached.expiresAt) {
+			return cached.target
 		}
 
 		const app = this.umbreld.apps.getApp(appId)
 		const {port} = await app.readManifest()
-		// Fallback: the app_proxy hostname alias (set by app-script via APP_PROXY_HOSTNAME)
-		let target = `http://app_proxy_${appId}:${port}`
+
+		const systemServices = new Set(['app_proxy', 'tor_proxy', 'i2p_daemon'])
+		let mainServiceName: string | undefined
+		let useHostNetwork = false
 
 		try {
 			const compose = await app.readCompose()
 			const services = Object.keys(compose.services ?? {})
-			const systemServices = new Set(['app_proxy', 'tor_proxy', 'i2p_daemon'])
-			const mainService = services.find((s) => !systemServices.has(s)) ?? services[0]
-
-			if (mainService) {
-				const serviceConfig = (compose.services as any)[mainService] ?? {}
-				const networkMode: string = serviceConfig.network_mode ?? ''
-
+			mainServiceName = services.find((s) => !systemServices.has(s)) ?? services[0]
+			if (mainServiceName) {
+				const networkMode: string = ((compose.services as any)[mainServiceName] ?? {}).network_mode ?? ''
 				if (networkMode === 'host' || networkMode.startsWith('service:') || networkMode.startsWith('container:')) {
-					// Shared or host network stack: container is not in umbrel_main_network.
-					// Reach it via the Docker host gateway (compose.yml maps host.docker.internal).
-					target = `http://host.docker.internal:${port}`
-				} else {
-					// Normal bridge networking: resolve by the container name set by patchComposeFile.
-					target = `http://${appId}_${mainService}_1:${port}`
+					useHostNetwork = true
 				}
 			}
 		} catch {
-			// compose unreadable — keep the app_proxy hostname fallback
+			// compose unreadable — proceed with dockerode lookup
 		}
 
-		this.#appTargetCache.set(appId, target)
-		return target
+		if (useHostNetwork) {
+			const target = `http://host.docker.internal:${port}`
+			this.#cacheAppTarget(appId, target)
+			return target
+		}
+
+		// Use dockerode to find the running container and get its IP in umbrel_main_network.
+		// This is more reliable than DNS: works even when the compose file is unreadable and
+		// avoids the brief window after container start when DNS hasn't propagated yet.
+		try {
+			const containers = await this.#docker.listContainers({
+				filters: JSON.stringify({
+					label: [`com.docker.compose.project=${appId}`],
+					status: ['running'],
+				}),
+			})
+
+			const mainContainer = containers.find((c) => {
+				const service = c.Labels['com.docker.compose.service']
+				return service && !systemServices.has(service)
+			})
+
+			if (mainContainer) {
+				const ip = (mainContainer.NetworkSettings.Networks as any)?.['umbrel_main_network']?.IPAddress
+				if (ip) {
+					const target = `http://${ip}:${port}`
+					this.#cacheAppTarget(appId, target)
+					return target
+				}
+			}
+		} catch (error) {
+			this.logger.verbose(`Dockerode lookup failed for ${appId}: ${(error as Error).message}`)
+		}
+
+		// Last resort: DNS-based container name set by patchComposeFile. Never use app_proxy.
+		if (mainServiceName) {
+			const target = `http://${appId}_${mainServiceName}_1:${port}`
+			this.#cacheAppTarget(appId, target)
+			return target
+		}
+
+		throw new Error(`Cannot resolve proxy target for app ${appId}: no running container found`)
 	}
 
 	// rewriteLocation: true  → path-based proxy: rewrites Location headers and HTML bodies
