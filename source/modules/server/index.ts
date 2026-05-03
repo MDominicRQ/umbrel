@@ -247,107 +247,108 @@ class Server {
 				`if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}` +
 				`})();</script>`
 
-			this.#appProxyCache.set(
-				cacheKey,
-				createProxyMiddleware({
-					target,
-					changeOrigin: true,
-					proxyTimeout: 30000,
-					timeout: 30000,
-					on: {
-						...(rewriteLocation && {
-							proxyReq: (proxyReq: http.ClientRequest) => {
-								// Disable compression so HTML can be rewritten as plain text.
-								proxyReq.setHeader('Accept-Encoding', 'identity')
-								// Remove forwarded-host so apps don't use the external hostname when
-								// generating redirect URLs — otherwise Jellyfin and similar apps produce
-								// absolute redirects like https://os.dominic.pw/web/ that miss the
-								// /proxy/:appId prefix and land on the Umbrel SPA 404 page.
-								proxyReq.removeHeader('x-forwarded-host')
-								proxyReq.removeHeader('x-forwarded-port')
-							},
-							proxyRes: (proxyRes: http.IncomingMessage, _req: http.IncomingMessage, res: http.ServerResponse) => {
-								this.logger.log(`[${appId}] proxyRes: ${proxyRes.statusCode} Location=${proxyRes.headers.location || '-'} CT=${(proxyRes.headers['content-type'] as string || '-').split(';')[0].trim()}`)
-								// Rewrite Location headers so redirects stay within /proxy/:appId.
-								// Handles root-relative paths (/web/) AND absolute URLs from any host
-								// (http://10.21.0.4:8096/web/, https://os.dominic.pw/web/, etc.).
-								const loc = proxyRes.headers.location
-								if (typeof loc === 'string') {
-									if (loc.startsWith('/') && !loc.startsWith('//') && !loc.startsWith(`${prefix}/`) && loc !== prefix) {
-										// Root-relative: /web/ → /proxy/jellyfin/web/
-										proxyRes.headers.location = `${prefix}${loc}`
-									} else if (/^https?:\/\//i.test(loc) && !loc.includes(`${prefix}/`)) {
-										// Absolute URL from any host: extract path and prefix it
-										try {
-											const locUrl = new URL(loc)
-											if (!locUrl.pathname.startsWith(prefix)) {
-												proxyRes.headers.location = `${prefix}${locUrl.pathname}${locUrl.search}${locUrl.hash}`
-											}
-										} catch {
-											// unparseable URL — leave as-is
-										}
-									}
+			// http-proxy-middleware v2 uses top-level onProxyReq/onProxyRes/onError options
+			// (not the v3 `on: {}` object — that API is silently ignored in v2 and causes
+			// all response handlers to never fire, breaking redirect rewriting entirely).
+			const proxyOptions: Parameters<typeof createProxyMiddleware>[0] = {
+				target,
+				changeOrigin: true,
+				proxyTimeout: 30000,
+				timeout: 30000,
+				onError: (err: Error, _req: http.IncomingMessage, res: http.ServerResponse | any) => {
+					this.logger.error(`App proxy error (${target}): ${(err as Error).message}`)
+					if (!(res as http.ServerResponse).headersSent) {
+						;(res as http.ServerResponse).writeHead(502, {'Content-Type': 'text/plain'})
+						res.end('App proxy unavailable')
+					}
+				},
+			}
+
+			if (rewriteLocation) {
+				proxyOptions.onProxyReq = (proxyReq: http.ClientRequest) => {
+					// Disable compression so HTML can be rewritten as plain text.
+					proxyReq.setHeader('Accept-Encoding', 'identity')
+					// Remove forwarded-host so apps don't use the external hostname when
+					// generating redirect URLs — otherwise Jellyfin and similar apps produce
+					// absolute redirects like https://os.dominic.pw/web/ that miss the
+					// /proxy/:appId prefix and land on the Umbrel SPA 404 page.
+					proxyReq.removeHeader('x-forwarded-host')
+					proxyReq.removeHeader('x-forwarded-port')
+				}
+				proxyOptions.onProxyRes = (proxyRes: http.IncomingMessage, _req: http.IncomingMessage, res: http.ServerResponse) => {
+					this.logger.log(`[${appId}] proxyRes: ${proxyRes.statusCode} Location=${proxyRes.headers.location || '-'} CT=${(proxyRes.headers['content-type'] as string || '-').split(';')[0].trim()}`)
+					// Rewrite Location headers so redirects stay within /proxy/:appId.
+					// Handles root-relative paths (/web/) AND absolute URLs from any host
+					// (http://10.21.0.4:8096/web/, https://os.dominic.pw/web/, etc.).
+					const loc = proxyRes.headers.location
+					if (typeof loc === 'string') {
+						if (loc.startsWith('/') && !loc.startsWith('//') && !loc.startsWith(`${prefix}/`) && loc !== prefix) {
+							// Root-relative: /web/ → /proxy/jellyfin/web/
+							proxyRes.headers.location = `${prefix}${loc}`
+						} else if (/^https?:\/\//i.test(loc) && !loc.includes(`${prefix}/`)) {
+							// Absolute URL from any host: extract path and prefix it
+							try {
+								const locUrl = new URL(loc)
+								if (!locUrl.pathname.startsWith(prefix)) {
+									proxyRes.headers.location = `${prefix}${locUrl.pathname}${locUrl.search}${locUrl.hash}`
 								}
-
-								const contentType = (proxyRes.headers['content-type'] as string) ?? ''
-								if (!contentType.includes('text/html')) return
-
-								// HTML response: strip headers that would break our injected content,
-								// then buffer the piped body chunks so we can rewrite before sending.
-								delete proxyRes.headers['content-security-policy']
-								delete proxyRes.headers['content-length']
-								delete proxyRes.headers['content-encoding']
-
-								const chunks: Buffer[] = []
-								const origWrite = res.write.bind(res)
-								const origEnd = res.end.bind(res)
-
-								// Intercept write: buffer chunks instead of sending them immediately.
-								;(res as any).write = (chunk: any): boolean => {
-									if (chunk != null) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-									return true
-								}
-
-								// Intercept end: assemble, rewrite, then flush.
-								;(res as any).end = (chunk?: any): http.ServerResponse => {
-									if (chunk != null && chunk !== '') {
-										chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-									}
-
-									// Restore originals before writing to avoid re-interception.
-									res.write = origWrite
-									res.end = origEnd
-
-									let body = Buffer.concat(chunks).toString('utf8')
-
-									if (/<head[\s>]/i.test(body)) {
-										body = body.replace(/<head([\s>])/i, `<head$1${injectScript}`)
-									} else {
-										body = injectScript + body
-									}
-
-									body = body.replace(
-										/((?:href|src|action|poster|data-src|data-href)=["'])\/(?!\/|proxy\/)/g,
-										`$1${prefix}/`,
-									)
-									body = body.replace(/(\burl\(["']?)\/(?!\/|proxy\/)/g, `$1${prefix}/`)
-
-									origWrite(Buffer.from(body, 'utf8'))
-									origEnd()
-									return res
-								}
-							},
-						}),
-						error: (err: Error, _req: http.IncomingMessage, res: http.ServerResponse | any) => {
-							this.logger.error(`App proxy error (${target}): ${(err as Error).message}`)
-							if (!(res as http.ServerResponse).headersSent) {
-								;(res as http.ServerResponse).writeHead(502, {'Content-Type': 'text/plain'})
-								res.end('App proxy unavailable')
+							} catch {
+								// unparseable URL — leave as-is
 							}
-						},
-					},
-				}),
-			)
+						}
+					}
+
+					const contentType = (proxyRes.headers['content-type'] as string) ?? ''
+					if (!contentType.includes('text/html')) return
+
+					// HTML response: strip headers that would break our injected content,
+					// then buffer the piped body chunks so we can rewrite before sending.
+					delete proxyRes.headers['content-security-policy']
+					delete proxyRes.headers['content-length']
+					delete proxyRes.headers['content-encoding']
+
+					const chunks: Buffer[] = []
+					const origWrite = res.write.bind(res)
+					const origEnd = res.end.bind(res)
+
+					// Intercept write: buffer chunks instead of sending them immediately.
+					;(res as any).write = (chunk: any): boolean => {
+						if (chunk != null) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+						return true
+					}
+
+					// Intercept end: assemble, rewrite, then flush.
+					;(res as any).end = (chunk?: any): http.ServerResponse => {
+						if (chunk != null && chunk !== '') {
+							chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+						}
+
+						// Restore originals before writing to avoid re-interception.
+						res.write = origWrite
+						res.end = origEnd
+
+						let body = Buffer.concat(chunks).toString('utf8')
+
+						if (/<head[\s>]/i.test(body)) {
+							body = body.replace(/<head([\s>])/i, `<head$1${injectScript}`)
+						} else {
+							body = injectScript + body
+						}
+
+						body = body.replace(
+							/((?:href|src|action|poster|data-src|data-href)=["'])\/(?!\/|proxy\/)/g,
+							`$1${prefix}/`,
+						)
+						body = body.replace(/(\burl\(["']?)\/(?!\/|proxy\/)/g, `$1${prefix}/`)
+
+						origWrite(Buffer.from(body, 'utf8'))
+						origEnd()
+						return res
+					}
+				}
+			}
+
+			this.#appProxyCache.set(cacheKey, createProxyMiddleware(proxyOptions))
 		}
 		return this.#appProxyCache.get(cacheKey)!
 	}
