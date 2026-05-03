@@ -102,13 +102,15 @@ class Server {
 		this.#appTargetCache.set(appId, {target, expiresAt: Date.now() + 60_000})
 	}
 
-	// Resolve the correct proxy target for an app using dockerode to get the container's
-	// actual IP in umbrel_main_network. Never falls back to app_proxy (requires an auth
-	// manager at 10.21.21.4:3006 that we don't run). Cache result for 60 s so container
-	// restarts (which may change the IP) are reflected promptly.
+	// Resolve the correct proxy target for an app. Strategy (in order):
+	// 1. Compose file → host/service/container network_mode → host.docker.internal
+	// 2. Compose file + dockerode container.inspect() → real IP in umbrel_main_network
+	// 3. listContainers by label → real IP in umbrel_main_network (compose unreadable)
+	// 4. DNS name from compose (last resort, avoids app_proxy which needs unavailable auth manager)
 	async #resolveAppTarget(appId: string): Promise<string> {
 		const cached = this.#appTargetCache.get(appId)
 		if (cached && Date.now() < cached.expiresAt) {
+			this.logger.verbose(`Proxy target [cache] ${appId} → ${cached.target}`)
 			return cached.target
 		}
 
@@ -129,19 +131,39 @@ class Server {
 					useHostNetwork = true
 				}
 			}
-		} catch {
-			// compose unreadable — proceed with dockerode lookup
+			this.logger.verbose(`Proxy target [compose] ${appId}: service=${mainServiceName} hostNet=${useHostNetwork}`)
+		} catch (composeError) {
+			this.logger.verbose(`Proxy target [compose] ${appId}: read failed — ${(composeError as Error).message}`)
 		}
 
 		if (useHostNetwork) {
 			const target = `http://host.docker.internal:${port}`
 			this.#cacheAppTarget(appId, target)
+			this.logger.verbose(`Proxy target [hostnet] ${appId} → ${target}`)
 			return target
 		}
 
-		// Use dockerode to find the running container and get its IP in umbrel_main_network.
-		// This is more reliable than DNS: works even when the compose file is unreadable and
-		// avoids the brief window after container start when DNS hasn't propagated yet.
+		// If we know the service name, inspect the specific container by its known name
+		// (set by patchComposeFile). container.inspect() returns full network info reliably.
+		if (mainServiceName) {
+			try {
+				const containerName = `${appId}_${mainServiceName}_1`
+				const container = this.#docker.getContainer(containerName)
+				const info = await container.inspect()
+				const ip = (info.NetworkSettings.Networks as any)?.['umbrel_main_network']?.IPAddress
+				if (ip) {
+					const target = `http://${ip}:${port}`
+					this.#cacheAppTarget(appId, target)
+					this.logger.verbose(`Proxy target [inspect] ${appId} → ${target}`)
+					return target
+				}
+				this.logger.verbose(`Proxy target [inspect] ${appId}: no IP in umbrel_main_network for ${containerName}`)
+			} catch (inspectError) {
+				this.logger.verbose(`Proxy target [inspect] ${appId}: ${(inspectError as Error).message}`)
+			}
+		}
+
+		// Compose unreadable or inspect failed: discover container by project label
 		try {
 			const containers = await this.#docker.listContainers({
 				filters: JSON.stringify({
@@ -149,6 +171,7 @@ class Server {
 					status: ['running'],
 				}),
 			})
+			this.logger.verbose(`Proxy target [list] ${appId}: found ${containers.length} containers`)
 
 			const mainContainer = containers.find((c) => {
 				const service = c.Labels['com.docker.compose.service']
@@ -156,21 +179,28 @@ class Server {
 			})
 
 			if (mainContainer) {
-				const ip = (mainContainer.NetworkSettings.Networks as any)?.['umbrel_main_network']?.IPAddress
+				// Inspect for full network info (listContainers may omit IP details)
+				const full = await this.#docker.getContainer(mainContainer.Id).inspect()
+				const ip = (full.NetworkSettings.Networks as any)?.['umbrel_main_network']?.IPAddress
 				if (ip) {
 					const target = `http://${ip}:${port}`
 					this.#cacheAppTarget(appId, target)
+					this.logger.verbose(`Proxy target [list+inspect] ${appId} → ${target}`)
 					return target
 				}
+				this.logger.verbose(`Proxy target [list+inspect] ${appId}: no IP in umbrel_main_network`)
+			} else {
+				this.logger.verbose(`Proxy target [list] ${appId}: no non-system container found`)
 			}
-		} catch (error) {
-			this.logger.verbose(`Dockerode lookup failed for ${appId}: ${(error as Error).message}`)
+		} catch (listError) {
+			this.logger.verbose(`Proxy target [list] ${appId}: ${(listError as Error).message}`)
 		}
 
-		// Last resort: DNS-based container name set by patchComposeFile. Never use app_proxy.
+		// Final fallback: DNS name. Never use app_proxy (needs auth manager at 10.21.21.4:3006).
 		if (mainServiceName) {
 			const target = `http://${appId}_${mainServiceName}_1:${port}`
 			this.#cacheAppTarget(appId, target)
+			this.logger.verbose(`Proxy target [dns] ${appId} → ${target}`)
 			return target
 		}
 
@@ -443,9 +473,13 @@ class Server {
 				}
 
 				// Proxy WebSocket upgrades for installed apps (path-based fallback when no umbreldDomain)
-				const appProxyMatch = pathname.match(/^\/proxy\/([^/]+)/)
+				const appProxyMatch = pathname.match(/^\/proxy\/([^/]+)(\/.*)?$/)
 				if (appProxyMatch) {
 					const appId = appProxyMatch[1]
+					// WS upgrades bypass Express — strip /proxy/${appId} from request.url manually
+					// so the app container receives just the path it expects (e.g. /ws not /proxy/appId/ws)
+					const strippedPath = appProxyMatch[2] || '/'
+					request.url = strippedPath
 					try {
 						const target = await this.#resolveAppTarget(appId)
 						const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true})
@@ -498,10 +532,41 @@ class Server {
 			}
 			try {
 				const target = await this.#resolveAppTarget(appId)
+				this.logger.verbose(`Proxy HTTP ${appId} → ${target} (req.url=${request.url})`)
 				this.#getAppProxy(appId, target, {rewriteLocation: true})(request, response, next)
 			} catch (error) {
 				this.logger.error(`App proxy setup error for ${appId}`, error)
-				response.status(404).json({error: 'App not found or not running'})
+				response.status(502).json({error: 'App not found or not running'})
+			}
+		})
+
+		// Diagnostic endpoint: hit /api/debug/proxy/:appId to see target resolution details
+		this.app.get('/api/debug/proxy/:appId', async (request, response) => {
+			const {appId} = request.params
+			try {
+				// Bypass cache so every call re-resolves
+				this.#appTargetCache.delete(appId)
+				const app = this.umbreld.apps.getApp(appId)
+				const {port} = await app.readManifest()
+				const containers = await this.#docker.listContainers({
+					filters: JSON.stringify({
+						label: [`com.docker.compose.project=${appId}`],
+						status: ['running'],
+					}),
+				})
+				const target = await this.#resolveAppTarget(appId)
+				response.json({appId, port, target, containers: containers.map((c) => ({
+					id: c.Id.slice(0, 12),
+					name: c.Names,
+					status: c.Status,
+					service: c.Labels['com.docker.compose.service'],
+					project: c.Labels['com.docker.compose.project'],
+					networks: Object.fromEntries(
+						Object.entries(c.NetworkSettings.Networks ?? {}).map(([net, info]: [string, any]) => [net, info?.IPAddress]),
+					),
+				}))})
+			} catch (error) {
+				response.status(500).json({error: (error as Error).message})
 			}
 		})
 
