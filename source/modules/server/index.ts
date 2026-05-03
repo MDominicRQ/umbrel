@@ -241,6 +241,10 @@ class Server {
 				`Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;` +
 				`var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};` +
 				`var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};` +
+				`var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};` +
+				`var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};` +
+				`try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');` +
+				`if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}` +
 				`})();</script>`
 
 			this.#appProxyCache.set(
@@ -263,6 +267,7 @@ class Server {
 								proxyReq.removeHeader('x-forwarded-port')
 							},
 							proxyRes: (proxyRes: http.IncomingMessage, _req: http.IncomingMessage, res: http.ServerResponse) => {
+								this.logger.log(`[${appId}] proxyRes: ${proxyRes.statusCode} Location=${proxyRes.headers.location || '-'} CT=${(proxyRes.headers['content-type'] as string || '-').split(';')[0].trim()}`)
 								// Rewrite Location headers so redirects stay within /proxy/:appId.
 								// Handles root-relative paths (/web/) AND absolute URLs from any host
 								// (http://10.21.0.4:8096/web/, https://os.dominic.pw/web/, etc.).
