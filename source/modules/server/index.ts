@@ -110,7 +110,7 @@ class Server {
 	async #resolveAppTarget(appId: string): Promise<string> {
 		const cached = this.#appTargetCache.get(appId)
 		if (cached && Date.now() < cached.expiresAt) {
-			this.logger.verbose(`Proxy target [cache] ${appId} → ${cached.target}`)
+			this.logger.log(`Proxy target [cache] ${appId} → ${cached.target}`)
 			return cached.target
 		}
 
@@ -131,15 +131,15 @@ class Server {
 					useHostNetwork = true
 				}
 			}
-			this.logger.verbose(`Proxy target [compose] ${appId}: service=${mainServiceName} hostNet=${useHostNetwork}`)
+			this.logger.log(`Proxy target [compose] ${appId}: service=${mainServiceName} hostNet=${useHostNetwork}`)
 		} catch (composeError) {
-			this.logger.verbose(`Proxy target [compose] ${appId}: read failed — ${(composeError as Error).message}`)
+			this.logger.log(`Proxy target [compose] ${appId}: read failed — ${(composeError as Error).message}`)
 		}
 
 		if (useHostNetwork) {
 			const target = `http://host.docker.internal:${port}`
 			this.#cacheAppTarget(appId, target)
-			this.logger.verbose(`Proxy target [hostnet] ${appId} → ${target}`)
+			this.logger.log(`Proxy target [hostnet] ${appId} → ${target}`)
 			return target
 		}
 
@@ -154,12 +154,12 @@ class Server {
 				if (ip) {
 					const target = `http://${ip}:${port}`
 					this.#cacheAppTarget(appId, target)
-					this.logger.verbose(`Proxy target [inspect] ${appId} → ${target}`)
+					this.logger.log(`Proxy target [inspect] ${appId} → ${target}`)
 					return target
 				}
-				this.logger.verbose(`Proxy target [inspect] ${appId}: no IP in umbrel_main_network for ${containerName}`)
+				this.logger.log(`Proxy target [inspect] ${appId}: no IP in umbrel_main_network for ${containerName}`)
 			} catch (inspectError) {
-				this.logger.verbose(`Proxy target [inspect] ${appId}: ${(inspectError as Error).message}`)
+				this.logger.log(`Proxy target [inspect] ${appId}: ${(inspectError as Error).message}`)
 			}
 		}
 
@@ -171,7 +171,7 @@ class Server {
 					status: ['running'],
 				}),
 			})
-			this.logger.verbose(`Proxy target [list] ${appId}: found ${containers.length} containers`)
+			this.logger.log(`Proxy target [list] ${appId}: found ${containers.length} containers`)
 
 			const mainContainer = containers.find((c) => {
 				const service = c.Labels['com.docker.compose.service']
@@ -185,22 +185,22 @@ class Server {
 				if (ip) {
 					const target = `http://${ip}:${port}`
 					this.#cacheAppTarget(appId, target)
-					this.logger.verbose(`Proxy target [list+inspect] ${appId} → ${target}`)
+					this.logger.log(`Proxy target [list+inspect] ${appId} → ${target}`)
 					return target
 				}
-				this.logger.verbose(`Proxy target [list+inspect] ${appId}: no IP in umbrel_main_network`)
+				this.logger.log(`Proxy target [list+inspect] ${appId}: no IP in umbrel_main_network`)
 			} else {
-				this.logger.verbose(`Proxy target [list] ${appId}: no non-system container found`)
+				this.logger.log(`Proxy target [list] ${appId}: no non-system container found`)
 			}
 		} catch (listError) {
-			this.logger.verbose(`Proxy target [list] ${appId}: ${(listError as Error).message}`)
+			this.logger.log(`Proxy target [list] ${appId}: ${(listError as Error).message}`)
 		}
 
 		// Final fallback: DNS name. Never use app_proxy (needs auth manager at 10.21.21.4:3006).
 		if (mainServiceName) {
 			const target = `http://${appId}_${mainServiceName}_1:${port}`
 			this.#cacheAppTarget(appId, target)
-			this.logger.verbose(`Proxy target [dns] ${appId} → ${target}`)
+			this.logger.log(`Proxy target [dns] ${appId} → ${target}`)
 			return target
 		}
 
@@ -255,18 +255,33 @@ class Server {
 							proxyReq: (proxyReq: http.ClientRequest) => {
 								// Disable compression so HTML can be rewritten as plain text.
 								proxyReq.setHeader('Accept-Encoding', 'identity')
+								// Remove forwarded-host so apps don't use the external hostname when
+								// generating redirect URLs — otherwise Jellyfin and similar apps produce
+								// absolute redirects like https://os.dominic.pw/web/ that miss the
+								// /proxy/:appId prefix and land on the Umbrel SPA 404 page.
+								proxyReq.removeHeader('x-forwarded-host')
+								proxyReq.removeHeader('x-forwarded-port')
 							},
 							proxyRes: (proxyRes: http.IncomingMessage, _req: http.IncomingMessage, res: http.ServerResponse) => {
 								// Rewrite Location headers so redirects stay within /proxy/:appId.
+								// Handles root-relative paths (/web/) AND absolute URLs from any host
+								// (http://10.21.0.4:8096/web/, https://os.dominic.pw/web/, etc.).
 								const loc = proxyRes.headers.location
-								if (
-									typeof loc === 'string' &&
-									loc.startsWith('/') &&
-									!loc.startsWith('//') &&
-									!loc.startsWith(`${prefix}/`) &&
-									loc !== prefix
-								) {
-									proxyRes.headers.location = `${prefix}${loc}`
+								if (typeof loc === 'string') {
+									if (loc.startsWith('/') && !loc.startsWith('//') && !loc.startsWith(`${prefix}/`) && loc !== prefix) {
+										// Root-relative: /web/ → /proxy/jellyfin/web/
+										proxyRes.headers.location = `${prefix}${loc}`
+									} else if (/^https?:\/\//i.test(loc) && !loc.includes(`${prefix}/`)) {
+										// Absolute URL from any host: extract path and prefix it
+										try {
+											const locUrl = new URL(loc)
+											if (!locUrl.pathname.startsWith(prefix)) {
+												proxyRes.headers.location = `${prefix}${locUrl.pathname}${locUrl.search}${locUrl.hash}`
+											}
+										} catch {
+											// unparseable URL — leave as-is
+										}
+									}
 								}
 
 								const contentType = (proxyRes.headers['content-type'] as string) ?? ''
@@ -532,7 +547,7 @@ class Server {
 			}
 			try {
 				const target = await this.#resolveAppTarget(appId)
-				this.logger.verbose(`Proxy HTTP ${appId} → ${target} (req.url=${request.url})`)
+				this.logger.log(`Proxy HTTP ${appId} → ${target} (req.url=${request.url})`)
 				this.#getAppProxy(appId, target, {rewriteLocation: true})(request, response, next)
 			} catch (error) {
 				this.logger.error(`App proxy setup error for ${appId}`, error)
