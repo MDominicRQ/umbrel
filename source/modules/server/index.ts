@@ -431,8 +431,48 @@ class Server {
 			next()
 		})
 
+		// Global proxy handler: runs before any other route, parses request.originalUrl
+		// manually so async/await does not corrupt request.url before the proxy is invoked.
+		this.app.use(async (request, response, next) => {
+			// Only handle /proxy/<appId> paths
+			const parsedUrl = new URL(request.originalUrl, 'http://umbrel.local')
+			const match = parsedUrl.pathname.match(/^\/proxy\/([a-z0-9][a-z0-9-]*)(\/.*)?$/)
+			if (!match) return next()
+
+			// Strip Helmet's CSP — it would block the injected inline URL-rewriting script
+			// and all inline scripts from the proxied app.
+			response.removeHeader('Content-Security-Policy')
+
+			const appId = match[1]
+			// match[2] is the path after /proxy/<appId>, e.g. "/web/" or undefined
+			const appPath = match[2] || '/'
+
+			// Jellyfin serves its UI at /web/ — redirect root /proxy/jellyfin/ there
+			if (appId === 'jellyfin' && appPath === '/') {
+				return response.redirect(302, `/proxy/${appId}/web/`)
+			}
+
+			if (umbreldDomain) {
+				const proto = this.#externalPort === 443 ? 'https' : 'http'
+				const search = parsedUrl.search || ''
+				return response.redirect(302, `${proto}://${appId}.${umbreldDomain}${appPath}${search}`)
+			}
+
+			try {
+				const target = await this.#resolveAppTarget(appId)
+				// Manually set request.url to the stripped path so the proxied app
+				// receives the correct path (e.g. /web/) without the /proxy/:appId prefix.
+				request.url = `${appPath}${parsedUrl.search || ''}`
+				this.logger.log(`Proxy HTTP ${appId} → ${target} (req.url=${request.url})`)
+				this.#getAppProxy(appId, target, {rewriteLocation: true})(request, response, next)
+			} catch (error) {
+				this.logger.error(`App proxy setup error for ${appId}`, error)
+				response.status(502).json({error: 'App not found or not running'})
+			}
+		})
+
 		// Subdomain app routing — handles ${appId}.${umbreldDomain} HTTP requests.
-		// Must be registered before /proxy/:appId so subdomain requests are never redirected.
+		// Must be registered after the global proxy handler so path-based proxy takes priority.
 		if (umbreldDomain) {
 			this.app.use(async (request, response, next) => {
 				const rawHost = request.headers['x-forwarded-host']
@@ -538,33 +578,6 @@ class Server {
 
 		this.app.get('/manager-api/v1/system/update-status', (request, response) => {
 			response.json({state: 'success', progress: 100, description: '', updateTo: ''})
-		})
-
-		// App entry point: redirect to subdomain when UMBREL_DOMAIN is set (universal fix),
-		// otherwise fall back to path-based proxy with Location rewriting.
-		this.app.use('/proxy/:appId', async (request, response, next) => {
-			// Strip Helmet's CSP — it would block the injected inline URL-rewriting script
-			// and all inline scripts from the proxied app.
-			response.removeHeader('Content-Security-Policy')
-			const {appId} = request.params
-			// Capture the URL after Express stripped /proxy/:appId — must be restored after await
-			// since async middleware can restore request.url to its original value.
-			const proxyUrl = request.url
-			if (umbreldDomain) {
-				const proto = this.#externalPort === 443 ? 'https' : 'http'
-				return response.redirect(302, `${proto}://${appId}.${umbreldDomain}${proxyUrl}`)
-			}
-			try {
-				const target = await this.#resolveAppTarget(appId)
-				// Restore the stripped URL before passing to the proxy so the app receives
-				// the correct path (e.g. /web/ not /proxy/jellyfin/web/).
-				request.url = proxyUrl
-				this.logger.log(`Proxy HTTP ${appId} → ${target} (req.url=${request.url})`)
-				this.#getAppProxy(appId, target, {rewriteLocation: true})(request, response, next)
-			} catch (error) {
-				this.logger.error(`App proxy setup error for ${appId}`, error)
-				response.status(502).json({error: 'App not found or not running'})
-			}
 		})
 
 		// Diagnostic endpoint: hit /api/debug/proxy/:appId to see target resolution details
