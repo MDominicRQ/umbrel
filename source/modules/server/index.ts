@@ -120,8 +120,8 @@ function buildInjectScript(prefix: string): string {
 	const p = JSON.stringify(prefix)
 	const org = 'location.origin'
 	const wso = "(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host"
-	const rw = `function rw(u){if(typeof u!=='string')return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;if(u.startsWith(${org}+'/')&&!u.startsWith(${org}+p+'/'))return ${org}+p+u.slice(${org}.length);return u;}`
-	const rwws = `function rwws(u){if(typeof u!=='string')return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return ${wso}+p+u;if(u.startsWith(${wso}+'/')&&!u.startsWith(${wso}+p+'/'))return ${wso}+p+u.slice(${wso}.length);return u;}`
+	const rw = `function rw(u){if(typeof u!=='string')return u;if(u.startsWith(p))return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;if(u.startsWith(${org}+'/')&&!u.startsWith(${org}+p+'/'))return ${org}+p+u.slice(${org}.length);return u;}`
+	const rwws = `function rwws(u){if(typeof u!=='string')return u;if(u.startsWith(p))return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return ${wso}+p+u;if(u.startsWith(${wso}+'/')&&!u.startsWith(${wso}+p+'/'))return ${wso}+p+u.slice(${wso}.length);return u;}`
 	return `<script>(function(){var p=${p};${rw};${rwws};var oF=window.fetch;window.fetch=function(u,i){return oF.call(this,rw(u),i);};var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};var oW=window.WebSocket;window.WebSocket=function(u,q){return q?new oW(rwws(u),q):new oW(rwws(u));};Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}})();</script>`
 }
 
@@ -833,9 +833,12 @@ class Server {
 			},
 			onError: (err: Error, _req: http.IncomingMessage, res: http.ServerResponse | any) => {
 				this.logger.error(`[${appId}] proxy error (${target}): ${(err as Error).message}`)
-				if (!(res as http.ServerResponse).headersSent) {
+				if ((res as http.ServerResponse).headersSent) return
+				if (typeof (res as any).writeHead === 'function') {
 					;(res as http.ServerResponse).writeHead(502, {'Content-Type': 'text/plain'})
-					res.end('App proxy unavailable')
+					;(res as http.ServerResponse).end('App proxy unavailable')
+				} else {
+					;(res as any).destroy?.()
 				}
 			},
 		}
@@ -1663,7 +1666,16 @@ lightning:10009
 
 
 
-				const {pathname, searchParams} = new URL(`https://localhost${request.url}`)
+				let rawUrl = request.url || '/'
+				if (!rawUrl.startsWith('/') || rawUrl.includes('://')) {
+					try {
+						const u = new URL(rawUrl, 'https://dummy')
+						rawUrl = u.pathname + u.search
+					} catch {
+						rawUrl = '/'
+					}
+				}
+				const {pathname, searchParams} = new URL(rawUrl, 'https://localhost')
 
 
 
