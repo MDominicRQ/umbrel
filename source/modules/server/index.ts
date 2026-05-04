@@ -547,12 +547,18 @@ class Server {
 			// and all inline scripts from the proxied app.
 			response.removeHeader('Content-Security-Policy')
 			const {appId} = request.params
+			// Capture the URL after Express stripped /proxy/:appId — must be restored after await
+			// since async middleware can restore request.url to its original value.
+			const proxyUrl = request.url
 			if (umbreldDomain) {
 				const proto = this.#externalPort === 443 ? 'https' : 'http'
-				return response.redirect(302, `${proto}://${appId}.${umbreldDomain}${request.url}`)
+				return response.redirect(302, `${proto}://${appId}.${umbreldDomain}${proxyUrl}`)
 			}
 			try {
 				const target = await this.#resolveAppTarget(appId)
+				// Restore the stripped URL before passing to the proxy so the app receives
+				// the correct path (e.g. /web/ not /proxy/jellyfin/web/).
+				request.url = proxyUrl
 				this.logger.log(`Proxy HTTP ${appId} → ${target} (req.url=${request.url})`)
 				this.#getAppProxy(appId, target, {rewriteLocation: true})(request, response, next)
 			} catch (error) {
