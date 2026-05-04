@@ -1,0 +1,22 @@
+{
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "fs-extra": "^11.3.4"
+  },
+  "dependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "@types/dockerode": "^4.0.1",
+    "@types/execa": "^0.9.0",
+    "@types/express": "^5.0.6",
+    "@types/helmet": "^0.0.48",
+    "@types/http-proxy-middleware": "^0.19.3",
+    "@types/ws": "^8.18.1",
+    "cookie-parser": "^1.4.7",
+    "dockerode": "^5.0.0",
+    "execa": "^9.6.1",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "http-proxy-middleware": "^3.0.5",
+    "ws": "^8.20.0"
+  }
+}

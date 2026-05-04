@@ -150,6 +150,46 @@ function rewriteJsContent(body: string, prefix: string): string {
 	return body
 }
 
+function getAppIdFromReferer(request: http.IncomingMessage): string | undefined {
+	const referer = request.headers['referer'] as string | undefined
+	if (!referer) return undefined
+	try {
+		const u = new URL(referer)
+		const m = u.pathname.match(/^\/proxy\/([^/]+)/)
+		return m?.[1]
+	} catch {
+		return undefined
+	}
+}
+
+const ROOT_ABSOLUTE_PATTERNS = [
+	/^\/_app\//, /^\/_app$/,
+	/^\/api\//, /^\/api$/,
+	/^\/assets\//, /^\/assets$/,
+	/^\/static\//, /^\/static$/,
+	/^\/manifest\.json$/,
+	/^\/favicon\.ico$/, /^\/favicon\.png$/,
+	/^\/robots\.txt$/,
+	/^\/sw\.js$/, /^\/service-worker\.js$/,
+	/^\/socket\.io\//,
+	/^\/ws\//, /^\/ws$/,
+	/^\/ollama\//, /^\/ollama$/,
+	/^\/models\//, /^\/models$/,
+]
+
+const UMBREL_OWNED_PATHS = ['/trpc', '/manager-api', '/api/files', '/api/debug']
+
+function isRootAbsoluteAppPath(pathname: string): boolean {
+	for (const pattern of ROOT_ABSOLUTE_PATTERNS) {
+		if (pattern.test(pathname)) return true
+	}
+	return false
+}
+
+function isUmbrelOwnedPath(pathname: string): boolean {
+	return UMBREL_OWNED_PATHS.some(p => pathname.startsWith(p))
+}
+
 class Server {
 
 	umbreld: Umbreld
@@ -202,12 +242,11 @@ class Server {
 
 		['tailscale', 'host-network'],
 
-		['bitcoind', 'service-only'],
-
+['bitcoind', 'service-only'],
+		['bitcoin', 'service-only'],
+		['bitcoin-knots', 'service-only'],
 		['lightning', 'service-only'],
-
 		['electrs', 'service-only'],
-
 		['core-lightning', 'service-only'],
 
 	])
@@ -1261,6 +1300,42 @@ cat /data/umbrel/app-data/bitcoind/data/bitcoin/.bitcoin/bitcoin.conf
 
 `
 
+				} else if (appId === 'bitcoin' || appId === 'bitcoin-knots') {
+
+					appName = 'Bitcoin Node'
+
+					appDescription = 'Bitcoin Core is running as a background service with no web interface.'
+
+					connectionInfo = `
+
+<h2>Bitcoin Core RPC</h2>
+
+<p>Connect to your Bitcoin Node from other apps using the RPC interface:</p>
+
+<ul>
+
+  <li><strong>Host:</strong> <code>${appId}</code> or <code>${appId}_1</code></li>
+
+  <li><strong>RPC Port:</strong> <code>8332</code> (HTTP)</li>
+
+  <li><strong>ZMQ Pub Port:</strong> <code>28332</code></li>
+
+</ul>
+
+<p>RPC credentials are stored in the app's environment. Access them via the Umbrel terminal:</p>
+
+<pre style="background:#f4f4f4;padding:15px;border-radius:6px;overflow-x:auto">
+
+# View RPC credentials
+
+cat /data/umbrel/app-data/${appId}/data/bitcoin/.bitcoin/bitcoin.conf | grep "^rpc"
+
+</pre>
+
+<p>See <a href="https://developer.bitcoin.org/reference/rpc/" target="_blank">Bitcoin Core RPC Documentation</a> for available endpoints.</p>
+
+`
+
 				} else if (appId === 'lightning') {
 
 					appName = 'Lightning Node'
@@ -1419,27 +1494,19 @@ lightning:10009
 				const kind = this.#appKinds.get(appId)
 
 				if (kind === 'host-network') {
-
 					const targetUrl = new URL(target)
-
 					if (targetUrl.hostname === 'host.docker.internal' && !this.#hostGatewayCache.has(targetUrl.port)) {
-
-						// Gateway probe never succeeded — do not attempt proxy, return clear error
-
-						response.status(502)
-
-						return response.json({
-
-							error: 'App not reachable',
-
-							detail: `The "${appId}" app runs on the host network and its web UI is not reachable from inside the Umbrel container. Gateway probe failed for all candidates.`,
-
-							suggestion: 'Access Tailscale directly at its host IP or via the Tailscale app on your devices.',
-
-						})
-
+						response.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'})
+						return response.end(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Tailscale</title></head>
+<body>
+<h1>Tailscale</h1>
+<p>This app uses your host network and cannot be accessed through the web proxy.</p>
+<p>Access Tailscale directly from within your network, or via the Tailscale admin panel at <a href="https://login.tailscale.com">login.tailscale.com</a>.</p>
+</body>
+</html>`)
 					}
-
 				}
 
 
@@ -1538,6 +1605,30 @@ lightning:10009
 
 		}
 
+		// Referer-based root-absolute SPA asset proxy
+		// Handles SPAs that emit /_app/, /api/, /assets/ etc — browser sends them to root domain
+		this.app.use(async (request: express.Request, response: express.Response, next: express.NextFunction) => {
+			const urlObj = new URL(request.originalUrl, 'https://os.dominic.pw')
+			const pathname = urlObj.pathname
+			const search = urlObj.search
+
+			if (!isRootAbsoluteAppPath(pathname)) return next()
+			if (isUmbrelOwnedPath(pathname)) return next()
+
+			const appId = getAppIdFromReferer(request)
+			if (!appId) return next()
+
+			try {
+				const target = await this.#resolveAppTarget(appId)
+				this.logger.log(`[${appId}] root-absolute proxy: ${pathname}${search || ''} (via Referer)`)
+				const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true})
+				proxy(request, response, next)
+			} catch (err) {
+				this.logger.error(`[${appId}] root-absolute proxy failed: ${(err as Error).message}`)
+				next()
+			}
+		})
+
 
 
 		this.server?.on('upgrade', async (request, socket, head) => {
@@ -1632,7 +1723,9 @@ lightning:10009
 
 					const strippedPath = appProxyMatch[2] || '/'
 
-					request.url = strippedPath
+					const search = searchParams.toString() ? `?${searchParams.toString()}` : ''
+
+					request.url = `${strippedPath}${search}`
 
 					try {
 
@@ -1641,6 +1734,8 @@ lightning:10009
 						const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true})
 
 						;(proxy as any).upgrade(request, socket, head)
+
+						this.logger.log(`[${appId}] wsUpgrade: ${pathname}${search} → ${target}${strippedPath}${search}`)
 
 					} catch (error) {
 
