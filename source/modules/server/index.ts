@@ -98,7 +98,57 @@ const wrapHandlersWithAsyncHandler = (router: express.Router) => {
 
 }
 
+function rewriteRedirectLocation(loc: string | undefined, prefix: string): string | undefined {
+	if (typeof loc !== 'string') return loc
+	if (loc.startsWith('/') && !loc.startsWith('//') && !loc.startsWith(`${prefix}/`) && loc !== prefix) {
+		return `${prefix}${loc}`
+	}
+	if (/^https?:\/\//i.test(loc) && !loc.includes(`${prefix}/`)) {
+		try {
+			const u = new URL(loc)
+			if (!u.pathname.startsWith(prefix)) {
+				return `${prefix}${u.pathname}${u.search}${u.hash}`
+			}
+		} catch {
+			// leave as-is
+		}
+	}
+	return loc
+}
 
+function buildInjectScript(prefix: string): string {
+	const p = JSON.stringify(prefix)
+	const org = 'location.origin'
+	const wso = "(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host"
+	const rw = `function rw(u){if(typeof u!=='string')return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;if(u.startsWith(${org}+'/')&&!u.startsWith(${org}+p+'/'))return ${org}+p+u.slice(${org}.length);return u;}`
+	const rwws = `function rwws(u){if(typeof u!=='string')return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return ${wso}+p+u;if(u.startsWith(${wso}+'/')&&!u.startsWith(${wso}+p+'/'))return ${wso}+p+u.slice(${wso}.length);return u;}`
+	return `<script>(function(){var p=${p};${rw};${rwws};var oF=window.fetch;window.fetch=function(u,i){return oF.call(this,rw(u),i);};var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};var oW=window.WebSocket;window.WebSocket=function(u,q){return q?new oW(rwws(u),q):new oW(rwws(u));};Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}})();</script>`
+}
+
+function rewriteContent(body: string, prefix: string): string {
+	body = body.replace(/((?:href|src|action|poster|data-src|data-href)=["'])\/(?!\/|proxy\/)/g, `$1${prefix}/`)
+	body = body.replace(/(\burl\(["']?)\/(?!\/|proxy\/)/g, `$1${prefix}/`)
+	return body
+}
+
+function rewriteJsContent(body: string, prefix: string): string {
+	body = body.replace(/import\(\/(?!\/)([^"']*)\)/g, `import(${prefix}/$1)`)
+	body = body.replace(/import\("(?!https?:\/\/)(?!\/)([^"]*)"\)/g, `import("${prefix}/$1")`)
+	body = body.replace(/import\('(?!https?:\/\/)(?!\/)([^']*)'\)/g, `import('${prefix}/$1')`)
+	body = body.replace(/(fetch|XMLHttpRequest)\(["']\/(?!\/)([^"']*)\"/g, `$1("${prefix}/$2"`)
+	body = body.replace(/fetch\('(?!\/)([^']*)'\)/g, `fetch('${prefix}/$1')`)
+	body = body.replace(/new WebSocket\(["']\/(?!\/)([^"']*)\"/g, `new WebSocket("${prefix}/$1"`)
+	body = body.replace(/new WebSocket\('(?!\/)([^']*)'\)/g, `new WebSocket('${prefix}/$1')`)
+	body = body.replace(/"(\/_app\/[^"]+)"/g, `"${prefix}$1"`)
+	body = body.replace(/'(\/_app\/[^']+)'/g, `'${prefix}$1'`)
+	body = body.replace(/"(\/api\/[^"]+)"/g, `"${prefix}$1"`)
+	body = body.replace(/'(\/api\/[^']+)'/g, `'${prefix}$1'`)
+	body = body.replace(/"(\/assets\/[^"]+)"/g, `"${prefix}$1"`)
+	body = body.replace(/'(\/assets\/[^']+)'/g, `'${prefix}$1'`)
+	body = body.replace(/"(\/models\/[^"]+)"/g, `"${prefix}$1"`)
+	body = body.replace(/'(\/models\/[^']+)'/g, `'${prefix}$1'`)
+	return body
+}
 
 class Server {
 
@@ -721,389 +771,162 @@ class Server {
 	// rewriteLocation: false → subdomain proxy: plain pass-through.
 
 	#getAppProxy(appId: string, target: string, {rewriteLocation = false} = {}) {
-
 		const cacheKey = `${appId}|${target}|${rewriteLocation}`
-
-		if (!this.#appProxyCache.has(cacheKey)) {
-
-			const prefix = `/proxy/${appId}`
-
-
-
-			// Injected into every HTML page.
-
-			// rw()   — rewrites root-relative (/foo) AND absolute same-origin (https://host/foo) URLs.
-
-			// rwws() — same logic for ws:/wss: WebSocket URLs.
-
-			// Also patches history.pushState/replaceState so SPA navigation stays within the proxy path.
-
-			const injectScript =
-
-				`<script>(function(){` +
-
-				`var p=${JSON.stringify(prefix)};` +
-
-				`var org=location.origin;` +
-
-				`var wso=(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host;` +
-
-				`function rw(u){` +
-
-				`if(typeof u!=='string')return u;` +
-
-				`if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;` +
-
-				`if(u.startsWith(org+'/')&&!u.startsWith(org+p+'/'))return org+p+u.slice(org.length);` +
-
-				`return u;}` +
-
-				`function rwws(u){` +
-
-				`if(typeof u!=='string')return u;` +
-
-				`if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return wso+p+u;` +
-
-				`if(u.startsWith(wso+'/')&&!u.startsWith(wso+p+'/'))return wso+p+u.slice(wso.length);` +
-
-				`return u;}` +
-
-				`var oF=window.fetch;window.fetch=function(u,i){return oF.call(this,rw(u),i);};` +
-
-				`var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};` +
-
-				`var oW=window.WebSocket;` +
-
-				`window.WebSocket=function(u,q){return q?new oW(rwws(u),q):new oW(rwws(u));};` +
-
-				`Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;` +
-
-				`var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};` +
-
-				`var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};` +
-
-				`var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};` +
-
-				`var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};` +
-
-				`try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');` +
-
-				`if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}` +
-
-				`})();</script>`
-
-
-
-			// http-proxy-middleware v2 uses top-level onProxyReq/onProxyRes/onError options
-
-			// (not the v3 `on: {}` object — that API is silently ignored in v2 and causes
-
-			// all response handlers to never fire, breaking redirect rewriting entirely).
-
-			const proxyOptions: Parameters<typeof createProxyMiddleware>[0] = {
-
-				target,
-
-				changeOrigin: true,
-
-				proxyTimeout: 30000,
-
-				timeout: 30000,
-
-				ws: true,
-
-				cookiePathRewrite: {'/': prefix},
-
-				cookieDomainRewrite: {'*': ''},
-
-				pathRewrite: (path: string): string => {
-
-					// Strip the /proxy/<appId> prefix so the backend receives the correct path.
-
-					// e.g. /proxy/jellyfin/web/ -> /web/
-
-					if (path === prefix) return '/'
-
-					if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length)
-
-					return path
-
-				},
-
-				onError: (err: Error, _req: http.IncomingMessage, res: http.ServerResponse | any) => {
-
-					this.logger.error(`App proxy error (${target}): ${(err as Error).message}`)
-
-					if (!(res as http.ServerResponse).headersSent) {
-
-						;(res as http.ServerResponse).writeHead(502, {'Content-Type': 'text/plain'})
-
-						res.end('App proxy unavailable')
-
-					}
-
-				},
-
-			}
-
-
-
-			if (rewriteLocation) {
-
-				proxyOptions.onProxyReq = (proxyReq: http.ClientRequest, req: http.IncomingMessage) => {
-
-					// Disable compression so HTML can be rewritten as plain text.
-
-					proxyReq.setHeader('Accept-Encoding', 'identity')
-
-
-
-					// For apps behind path-based proxy:
-
-					// - Nextcloud needs X-Forwarded-* headers to generate correct URLs
-
-					// - Other apps (Jellyfin, etc): remove them to prevent absolute redirect URLs
-
-					//   that would bypass the /proxy/<appId> prefix and land on the Umbrel SPA 404.
-
-					const forwardedHost = (req.headers['x-forwarded-host'] as string) || 'os.dominic.pw'
-
-					const forwardedProto = (req.headers['x-forwarded-proto'] as string) || 'https'
-
-					const forwardedPort = (req.headers['x-forwarded-port'] as string) || '443'
-
-
-
-					if (appId === 'nextcloud') {
-
-						proxyReq.setHeader('X-Forwarded-Host', forwardedHost)
-
-						proxyReq.setHeader('X-Forwarded-Proto', forwardedProto)
-
-						proxyReq.setHeader('X-Forwarded-Port', forwardedPort)
-
-						proxyReq.setHeader('X-Forwarded-Prefix', prefix)
-
-						proxyReq.setHeader('Host', 'os.dominic.pw')
-
-					} else {
-
-						proxyReq.removeHeader('x-forwarded-host')
-
-						proxyReq.removeHeader('x-forwarded-proto')
-
-						proxyReq.removeHeader('x-forwarded-port')
-
-					}
-
-
-
-					// Manually rewrite the proxy path to strip the /proxy/<appId> prefix.
-
-					// The HTTP handler already sets request.url to the stripped path (e.g. /web/).
-
-					// Use proxyReq.path as the authoritative source since HPM may derive it from there.
-
-					const inPath = proxyReq.path ?? req.url ?? '/'
-
-					const outPath = inPath.startsWith(`${prefix}/`) ? inPath.slice(prefix.length) : (inPath === prefix ? '/' : inPath)
-
-					proxyReq.path = outPath
-
-					this.logger.log(`[${appId}] proxyReq: ${inPath} → ${target}${outPath}`)
-
-				}
-
-
-
-				proxyOptions.onProxyRes = (proxyRes: http.IncomingMessage, _req: http.IncomingMessage, res: http.ServerResponse) => {
-
-					this.logger.log(`[${appId}] proxyRes: ${proxyRes.statusCode} Location=${proxyRes.headers.location || '-'} CT=${(proxyRes.headers['content-type'] as string || '-').split(';')[0].trim()}`)
-
-					// Rewrite Location headers so redirects stay within /proxy/:appId.
-
-					// Handles root-relative paths (/web/) AND absolute URLs from any host
-
-					// (http://10.21.0.4:8096/web/, https://os.dominic.pw/web/, etc.).
-
-					const loc = proxyRes.headers.location
-
-					const refresh = proxyRes.headers.refresh
-
-					if (typeof loc === 'string') {
-
-						if (loc.startsWith('/') && !loc.startsWith('//') && !loc.startsWith(`${prefix}/`) && loc !== prefix) {
-
-							proxyRes.headers.location = `${prefix}${loc}`
-
-						} else if (/^https?:\/\//i.test(loc) && !loc.includes(`${prefix}/`)) {
-
-							try {
-
-								const locUrl = new URL(loc)
-
-								if (!locUrl.pathname.startsWith(prefix)) {
-
-									proxyRes.headers.location = `${prefix}${locUrl.pathname}${locUrl.search}${locUrl.hash}`
-
-								}
-
-							} catch {
-
-								// unparseable URL — leave as-is
-
-							}
-
-						}
-
-					}
-
-					if (typeof refresh === 'string' && refresh.includes('url=')) {
-
-						const urlMatch = refresh.match(/url=(.+)/i)
-
-						if (urlMatch) {
-
-							const origUrl = urlMatch[1].trim().replace(/^["']|["']$/g, '')
-
-							let newUrl: string
-
-							if (origUrl.startsWith('/') && !origUrl.startsWith('//')) {
-
-								newUrl = `${prefix}${origUrl}`
-
-							} else {
-
-								try {
-
-									const u = new URL(origUrl)
-
-									newUrl = `${prefix}${u.pathname}${u.search}${u.hash}`
-
-								} catch {
-
-									newUrl = origUrl
-
-								}
-
-							}
-
-							proxyRes.headers.refresh = refresh.replace(/url=.+/i, `url=${newUrl}`)
-
-						}
-
-					}
-
-
-
-					if (appId === 'nextcloud') return
-
-					const contentType = (proxyRes.headers['content-type'] as string) ?? ''
-
-					if (!contentType.includes('text/html')) return
-
-
-
-					// HTML response: strip headers that would break our injected content,
-
-					// then buffer the piped body chunks so we can rewrite before sending.
-
-					delete proxyRes.headers['content-security-policy']
-
-					delete proxyRes.headers['content-length']
-
-					delete proxyRes.headers['content-encoding']
-
-
-
-					const chunks: Buffer[] = []
-
-					const origWrite = res.write.bind(res)
-
-					const origEnd = res.end.bind(res)
-
-
-
-					// Intercept write: buffer chunks instead of sending them immediately.
-
-					;(res as any).write = (chunk: any): boolean => {
-
-						if (chunk != null) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-
-						return true
-
-					}
-
-
-
-					// Intercept end: assemble, rewrite, then flush.
-
-					;(res as any).end = (chunk?: any): http.ServerResponse => {
-
-						if (chunk != null && chunk !== '') {
-
-							chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-
-						}
-
-
-
-						// Restore originals before writing to avoid re-interception.
-
-						res.write = origWrite
-
-						res.end = origEnd
-
-
-
-						let body = Buffer.concat(chunks).toString('utf8')
-
-
-
-						if (/<head[\s>]/i.test(body)) {
-
-							body = body.replace(/<head([\s>])/i, `<head$1${injectScript}`)
-
-						} else {
-
-							body = injectScript + body
-
-						}
-
-
-
-						body = body.replace(
-
-							/((?:href|src|action|poster|data-src|data-href)=["'])\/(?!\/|proxy\/)/g,
-
-							`$1${prefix}/`,
-
-						)
-
-						body = body.replace(/(\burl\(["']?)\/(?!\/|proxy\/)/g, `$1${prefix}/`)
-
-
-
-						origWrite(Buffer.from(body, 'utf8'))
-
-						origEnd()
-
-						return res
-
-					}
-
-				}
-
-			}
-
-
-
-			this.#appProxyCache.set(cacheKey, createProxyMiddleware(proxyOptions))
-
+		if (this.#appProxyCache.has(cacheKey)) {
+			return this.#appProxyCache.get(cacheKey)!
 		}
 
-		return this.#appProxyCache.get(cacheKey)!
+		const prefix = `/proxy/${appId}`
+		const injectScript = buildInjectScript(prefix)
 
+		const proxyOptions: Parameters<typeof createProxyMiddleware>[0] = {
+			target,
+			changeOrigin: true,
+			proxyTimeout: 30000,
+			timeout: 30000,
+			ws: true,
+			cookiePathRewrite: {'/': prefix},
+			cookieDomainRewrite: {'*': ''},
+			pathRewrite: (path: string): string => {
+				if (path === prefix) return '/'
+				if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length)
+				return path
+			},
+			onError: (err: Error, _req: http.IncomingMessage, res: http.ServerResponse | any) => {
+				this.logger.error(`[${appId}] proxy error (${target}): ${(err as Error).message}`)
+				if (!(res as http.ServerResponse).headersSent) {
+					;(res as http.ServerResponse).writeHead(502, {'Content-Type': 'text/plain'})
+					res.end('App proxy unavailable')
+				}
+			},
+		}
+
+		if (rewriteLocation) {
+			proxyOptions.onProxyReq = (proxyReq: http.ClientRequest, req: http.IncomingMessage) => {
+				proxyReq.setHeader('Accept-Encoding', 'identity')
+
+				const forwardedHost = (req.headers['x-forwarded-host'] as string) || 'os.dominic.pw'
+				const forwardedProto = (req.headers['x-forwarded-proto'] as string) || 'https'
+				const forwardedPort = (req.headers['x-forwarded-port'] as string) || '443'
+
+				if (appId === 'nextcloud') {
+					proxyReq.setHeader('X-Forwarded-Host', forwardedHost)
+					proxyReq.setHeader('X-Forwarded-Proto', forwardedProto)
+					proxyReq.setHeader('X-Forwarded-Port', forwardedPort)
+					proxyReq.setHeader('X-Forwarded-Prefix', prefix)
+					proxyReq.setHeader('Host', forwardedHost.split(':')[0])
+					proxyReq.setHeader('Overwritehost', forwardedHost.split(':')[0])
+				} else {
+					proxyReq.removeHeader('x-forwarded-host')
+					proxyReq.removeHeader('x-forwarded-proto')
+					proxyReq.removeHeader('x-forwarded-port')
+				}
+
+				const inPath = proxyReq.path ?? req.url ?? '/'
+				const outPath = inPath.startsWith(`${prefix}/`)
+					? inPath.slice(prefix.length)
+					: (inPath === prefix ? '/' : inPath)
+				proxyReq.path = outPath
+				this.logger.log(`[${appId}] proxyReq: ${inPath} → ${target}${outPath}`)
+			}
+
+			proxyOptions.onProxyReqWs = (proxyReq: http.ClientRequest, req: http.IncomingMessage) => {
+				const fwdHost = (req.headers['x-forwarded-host'] as string) || 'os.dominic.pw'
+				proxyReq.setHeader('Host', fwdHost)
+				proxyReq.setHeader('Origin', `https://${fwdHost}`)
+				proxyReq.setHeader('X-Forwarded-Host', fwdHost)
+				proxyReq.setHeader('X-Forwarded-Proto', 'https')
+				this.logger.log(`[${appId}] wsUpgrade: ${req.url} → ${target}`)
+			}
+
+			proxyOptions.onProxyRes = (proxyRes: http.IncomingMessage, _req: http.IncomingMessage, res: http.ServerResponse) => {
+				const contentType = (proxyRes.headers['content-type'] as string) ?? ''
+				this.logger.log(
+					`[${appId}] proxyRes: ${proxyRes.statusCode} ` +
+					`Location=${proxyRes.headers.location || '-'} ` +
+					`CT=${contentType.split(';')[0].trim() || '-'}`,
+				)
+
+				const loc = proxyRes.headers.location
+				if (typeof loc === 'string') {
+					proxyRes.headers.location = rewriteRedirectLocation(loc, prefix) ?? loc
+				}
+				const refresh = proxyRes.headers.refresh
+				if (typeof refresh === 'string' && refresh.includes('url=')) {
+					const m = refresh.match(/url=(.+)/i)
+					if (m) {
+						const orig = m[1].trim().replace(/^["']|["']$/g, '')
+						let rewritten: string
+						if (orig.startsWith('/') && !orig.startsWith('//')) {
+							rewritten = `${prefix}${orig}`
+						} else {
+							try {
+								const u = new URL(orig)
+								rewritten = `${prefix}${u.pathname}${u.search}${u.hash}`
+							} catch {
+								rewritten = orig
+							}
+						}
+						proxyRes.headers.refresh = refresh.replace(/url=.+/i, `url=${rewritten}`)
+					}
+				}
+
+				const isHtml = contentType.includes('text/html')
+				const isCss = contentType.includes('text/css')
+				const isJs =
+					contentType.includes('application/javascript') ||
+					contentType.includes('text/javascript')
+				const isManifest = contentType.includes('application/manifest+json')
+
+				if (!isHtml && !isCss && !isJs && !isManifest) return
+
+				if (appId === 'nextcloud') return
+
+				delete proxyRes.headers['content-security-policy']
+				delete proxyRes.headers['content-length']
+				delete proxyRes.headers['content-encoding']
+
+				const chunks: Buffer[] = []
+				const origWrite = res.write.bind(res)
+				const origEnd = res.end.bind(res)
+
+				;(res as any).write = (chunk: any): boolean => {
+					if (chunk != null) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+					return true
+				}
+
+				;(res as any).end = (chunk?: any): http.ServerResponse => {
+					if (chunk != null && chunk !== '') {
+						chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+					}
+
+					res.write = origWrite
+					res.end = origEnd
+
+					let body = Buffer.concat(chunks).toString('utf8')
+
+					if (/<head\b/i.test(body)) {
+						body = body.replace(/(<head\b[^>]*)(>)/i, `$1$2${injectScript}`, 1)
+					} else {
+						body = injectScript + body
+					}
+
+					body = rewriteContent(body, prefix)
+
+					if (isJs) {
+						body = rewriteJsContent(body, prefix)
+					}
+
+					origWrite(Buffer.from(body, 'utf8'))
+					origEnd()
+					return res
+				}
+			}
+		}
+
+		const pm = createProxyMiddleware(proxyOptions)
+		this.#appProxyCache.set(cacheKey, pm)
+		return pm
 	}
 
 
