@@ -394,8 +394,8 @@ class Server {
 				proxyTimeout: 30000,
 				timeout: 30000,
 				ws: true,
-				cookiePathRewrite: {[prefix]: '/'},
-				cookieDomainRewrite: {[prefix]: ''},
+				cookiePathRewrite: {'/': prefix},
+				cookieDomainRewrite: {'*': ''},
 				pathRewrite: (path: string): string => {
 					// Strip the /proxy/<appId> prefix so the backend receives the correct path.
 					// e.g. /proxy/jellyfin/web/ -> /web/
@@ -413,7 +413,7 @@ class Server {
 			}
 
 			if (rewriteLocation) {
-				proxyOptions.onProxyReq = (proxyReq: http.ClientRequest, _proxyReqOptions: http.RequestOptions, req: http.IncomingMessage) => {
+				proxyOptions.onProxyReq = (proxyReq: http.ClientRequest, req: http.IncomingMessage) => {
 					// Disable compression so HTML can be rewritten as plain text.
 					proxyReq.setHeader('Accept-Encoding', 'identity')
 
@@ -437,9 +437,9 @@ class Server {
 					}
 
 					// Manually rewrite the proxy path to strip the /proxy/<appId> prefix.
-					// This is the authoritative path rewrite — overrides whatever path HPM
-					// derived from request.url, ensuring the backend receives the correct path.
-					const inPath = _proxyReqOptions.path ?? '/'
+					// The HTTP handler already sets request.url to the stripped path (e.g. /web/).
+					// Use proxyReq.path as the authoritative source since HPM may derive it from there.
+					const inPath = proxyReq.path ?? req.url ?? '/'
 					const outPath = inPath.startsWith(`${prefix}/`) ? inPath.slice(prefix.length) : (inPath === prefix ? '/' : inPath)
 					proxyReq.path = outPath
 					this.logger.log(`[${appId}] proxyReq: ${inPath} → ${target}${outPath}`)
