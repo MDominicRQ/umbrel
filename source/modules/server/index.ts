@@ -102,11 +102,30 @@ class Server {
 		this.#appTargetCache.set(appId, {target, expiresAt: Date.now() + 60_000})
 	}
 
+	// Normalize compose service environment to a flat map of key→value.
+	// Handles both YAML object form and array-of-"KEY=value" strings form.
+	#parseServiceEnv(env: Record<string, string> | string[] | undefined): Record<string, string> {
+		if (!env) return {}
+		if (Array.isArray(env)) {
+			const result: Record<string, string> = {}
+			for (const item of env) {
+				const eqIdx = item.indexOf('=')
+				if (eqIdx > 0) {
+					result[item.slice(0, eqIdx)] = item.slice(eqIdx + 1)
+				}
+			}
+			return result
+		}
+		return {...env}
+	}
+
 	// Resolve the correct proxy target for an app. Strategy (in order):
-	// 1. Compose file → host/service/container network_mode → host.docker.internal
-	// 2. Compose file + dockerode container.inspect() → real IP in umbrel_main_network
-	// 3. listContainers by label → real IP in umbrel_main_network (compose unreadable)
-	// 4. DNS name from compose (last resort, avoids app_proxy which needs unavailable auth manager)
+	// 1. app_proxy.environment.APP_HOST + APP_PORT → inspect container for IP in umbrel_main_network
+	//    (uses the official app declaration; works for most multi-service apps like Nextcloud, Jellyfin, Vaultwarden)
+	// 2. network_mode: host / service: / container:  → host.docker.internal:<manifestPort>
+	// 3. Heuristic: prefer services named server/web/app/frontend, skip db/redis/cron/worker/postgres/mysql/mariadb/machine-learning
+	// 4. listContainers by label → real IP in umbrel_main_network (compose unreadable)
+	// 5. DNS name fallback (last resort; never uses app_proxy which needs unavailable auth manager)
 	async #resolveAppTarget(appId: string): Promise<string> {
 		const cached = this.#appTargetCache.get(appId)
 		if (cached && Date.now() < cached.expiresAt) {
@@ -115,56 +134,86 @@ class Server {
 		}
 
 		const app = this.umbreld.apps.getApp(appId)
-		const {port} = await app.readManifest()
-
-		const systemServices = new Set(['app_proxy', 'tor_proxy', 'i2p_daemon'])
-		let mainServiceName: string | undefined
-		let useHostNetwork = false
+		const {port: manifestPort} = await app.readManifest()
 
 		try {
 			const compose = await app.readCompose()
-			const services = Object.keys(compose.services ?? {})
-			mainServiceName = services.find((s) => !systemServices.has(s)) ?? services[0]
-			if (mainServiceName) {
-				const networkMode: string = ((compose.services as any)[mainServiceName] ?? {}).network_mode ?? ''
-				if (networkMode === 'host' || networkMode.startsWith('service:') || networkMode.startsWith('container:')) {
-					useHostNetwork = true
+
+			// ── Strategy 1: app_proxy environment ──────────────────────────────────
+			// Most Umbrel apps declare the real web service via app_proxy.APP_HOST and APP_PORT.
+			// We read those directly instead of guessing which service is "main".
+			const appProxyEnv = this.#parseServiceEnv(
+				(compose.services as any)?.['app_proxy']?.['environment'],
+			)
+			if (appProxyEnv['APP_HOST'] && appProxyEnv['APP_PORT']) {
+				const appHost = appProxyEnv['APP_HOST']
+				const appPort = parseInt(appProxyEnv['APP_PORT'], 10)
+				if (appPort > 0) {
+					// Try to resolve APP_HOST to an IP in umbrel_main_network
+					try {
+						const container = this.#docker.getContainer(appHost)
+						const info = await container.inspect()
+						const ip = (info.NetworkSettings.Networks as any)?.['umbrel_main_network']?.IPAddress
+						if (ip) {
+							const target = `http://${ip}:${appPort}`
+							this.#cacheAppTarget(appId, target)
+							this.logger.log(`Proxy target [app-proxy] ${appId}: ${appHost}→${target}`)
+							return target
+						}
+						this.logger.log(`Proxy target [app-proxy] ${appId}: ${appHost} has no umbrel_main_network IP`)
+					} catch {
+						this.logger.log(`Proxy target [app-proxy] ${appId}: could not inspect ${appHost}`)
+					}
+					// Fall through: try DNS-based resolution below
 				}
 			}
-			this.logger.log(`Proxy target [compose] ${appId}: service=${mainServiceName} hostNet=${useHostNetwork}`)
-		} catch (composeError) {
-			this.logger.log(`Proxy target [compose] ${appId}: read failed — ${(composeError as Error).message}`)
-		}
 
-		if (useHostNetwork) {
-			const target = `http://host.docker.internal:${port}`
-			this.#cacheAppTarget(appId, target)
-			this.logger.log(`Proxy target [hostnet] ${appId} → ${target}`)
-			return target
-		}
-
-		// If we know the service name, inspect the specific container by its known name
-		// (set by patchComposeFile). container.inspect() returns full network info reliably.
-		if (mainServiceName) {
-			try {
-				const containerName = `${appId}_${mainServiceName}_1`
-				const container = this.#docker.getContainer(containerName)
-				const info = await container.inspect()
-				const ip = (info.NetworkSettings.Networks as any)?.['umbrel_main_network']?.IPAddress
-				if (ip) {
-					const target = `http://${ip}:${port}`
+			// ── Strategy 2: host network mode ───────────────────────────────────────
+			const services = Object.keys(compose.services ?? {})
+			for (const svc of services) {
+				if (svc === 'app_proxy' || svc === 'tor_proxy' || svc === 'i2p_daemon') continue
+				const networkMode: string = ((compose.services as any)[svc] ?? {})['network_mode'] ?? ''
+				if (networkMode === 'host' || networkMode.startsWith('service:') || networkMode.startsWith('container:')) {
+					const target = `http://host.docker.internal:${manifestPort}`
 					this.#cacheAppTarget(appId, target)
-					this.logger.log(`Proxy target [inspect] ${appId} → ${target}`)
+					this.logger.log(`Proxy target [hostnet] ${appId}: ${svc}→${target}`)
 					return target
 				}
-				this.logger.log(`Proxy target [inspect] ${appId}: no IP in umbrel_main_network for ${containerName}`)
-			} catch (inspectError) {
-				this.logger.log(`Proxy target [inspect] ${appId}: ${(inspectError as Error).message}`)
 			}
-		}
 
-		// Compose unreadable or inspect failed: discover container by project label
-		try {
+			// ── Strategy 3: heuristic — prefer web/server/app service ───────────────
+			const preferredOrder = ['server', 'web', 'app', 'frontend']
+			const skipSet = new Set(['db', 'redis', 'postgres', 'mysql', 'mariadb', 'cron', 'worker', 'machine-learning', 'proxy', 'nginx', 'app_proxy', 'tor_proxy', 'i2p_daemon'])
+			let chosenService: string | undefined
+			// First pass: preferred names
+			for (const pref of preferredOrder) {
+				chosenService = services.find((s) => s === pref && !skipSet.has(s))
+				if (chosenService) break
+			}
+			// Second pass: any non-skipped service
+			if (!chosenService) {
+				chosenService = services.find((s) => !skipSet.has(s))
+			}
+
+			if (chosenService) {
+				const containerName = `${appId}_${chosenService}_1`
+				try {
+					const container = this.#docker.getContainer(containerName)
+					const info = await container.inspect()
+					const ip = (info.NetworkSettings.Networks as any)?.['umbrel_main_network']?.IPAddress
+					if (ip) {
+						const target = `http://${ip}:${manifestPort}`
+						this.#cacheAppTarget(appId, target)
+						this.logger.log(`Proxy target [heuristic] ${appId}: ${chosenService}→${target}`)
+						return target
+					}
+					this.logger.log(`Proxy target [heuristic] ${appId}: ${chosenService} has no umbrel_main_network IP`)
+				} catch (inspectError) {
+					this.logger.log(`Proxy target [heuristic] ${appId}: inspect failed — ${(inspectError as Error).message}`)
+				}
+			}
+
+			// ── Strategy 4: listContainers by project label ─────────────────────────
 			const containers = await this.#docker.listContainers({
 				filters: JSON.stringify({
 					label: [`com.docker.compose.project=${appId}`],
@@ -175,15 +224,14 @@ class Server {
 
 			const mainContainer = containers.find((c) => {
 				const service = c.Labels['com.docker.compose.service']
-				return service && !systemServices.has(service)
+				return service && !skipSet.has(service)
 			})
 
 			if (mainContainer) {
-				// Inspect for full network info (listContainers may omit IP details)
 				const full = await this.#docker.getContainer(mainContainer.Id).inspect()
 				const ip = (full.NetworkSettings.Networks as any)?.['umbrel_main_network']?.IPAddress
 				if (ip) {
-					const target = `http://${ip}:${port}`
+					const target = `http://${ip}:${manifestPort}`
 					this.#cacheAppTarget(appId, target)
 					this.logger.log(`Proxy target [list+inspect] ${appId} → ${target}`)
 					return target
@@ -192,16 +240,16 @@ class Server {
 			} else {
 				this.logger.log(`Proxy target [list] ${appId}: no non-system container found`)
 			}
-		} catch (listError) {
-			this.logger.log(`Proxy target [list] ${appId}: ${(listError as Error).message}`)
-		}
 
-		// Final fallback: DNS name. Never use app_proxy (needs auth manager at 10.21.21.4:3006).
-		if (mainServiceName) {
-			const target = `http://${appId}_${mainServiceName}_1:${port}`
-			this.#cacheAppTarget(appId, target)
-			this.logger.log(`Proxy target [dns] ${appId} → ${target}`)
-			return target
+			// ── Strategy 5: DNS name fallback ───────────────────────────────────────
+			if (chosenService) {
+				const target = `http://${appId}_${chosenService}_1:${manifestPort}`
+				this.#cacheAppTarget(appId, target)
+				this.logger.log(`Proxy target [dns] ${appId} → ${target}`)
+				return target
+			}
+		} catch (composeError) {
+			this.logger.log(`Proxy target [compose] ${appId}: read failed — ${(composeError as Error).message}`)
 		}
 
 		throw new Error(`Cannot resolve proxy target for app ${appId}: no running container found`)
