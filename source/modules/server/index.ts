@@ -255,6 +255,13 @@ class Server {
 				changeOrigin: true,
 				proxyTimeout: 30000,
 				timeout: 30000,
+				pathRewrite: (path: string): string => {
+					// Strip the /proxy/<appId> prefix so the backend receives the correct path.
+					// e.g. /proxy/jellyfin/web/ -> /web/
+					if (path === prefix) return '/'
+					if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length)
+					return path
+				},
 				onError: (err: Error, _req: http.IncomingMessage, res: http.ServerResponse | any) => {
 					this.logger.error(`App proxy error (${target}): ${(err as Error).message}`)
 					if (!(res as http.ServerResponse).headersSent) {
@@ -265,7 +272,7 @@ class Server {
 			}
 
 			if (rewriteLocation) {
-				proxyOptions.onProxyReq = (proxyReq: http.ClientRequest) => {
+				proxyOptions.onProxyReq = (proxyReq: http.ClientRequest, proxyReqOptions: http.RequestOptions) => {
 					// Disable compression so HTML can be rewritten as plain text.
 					proxyReq.setHeader('Accept-Encoding', 'identity')
 					// Remove forwarded-host so apps don't use the external hostname when
@@ -274,7 +281,15 @@ class Server {
 					// /proxy/:appId prefix and land on the Umbrel SPA 404 page.
 					proxyReq.removeHeader('x-forwarded-host')
 					proxyReq.removeHeader('x-forwarded-port')
+					// Manually rewrite the proxy path to strip the /proxy/<appId> prefix.
+					// This is the authoritative path rewrite — overrides whatever path HPM
+					// derived from request.url, ensuring the backend receives the correct path.
+					const inPath = proxyReqOptions.path ?? '/'
+					const outPath = inPath.startsWith(`${prefix}/`) ? inPath.slice(prefix.length) : (inPath === prefix ? '/' : inPath)
+					proxyReq.path = outPath
+					this.logger.log(`[${appId}] proxyReq: ${inPath} → ${target}${outPath}`)
 				}
+
 				proxyOptions.onProxyRes = (proxyRes: http.IncomingMessage, _req: http.IncomingMessage, res: http.ServerResponse) => {
 					this.logger.log(`[${appId}] proxyRes: ${proxyRes.statusCode} Location=${proxyRes.headers.location || '-'} CT=${(proxyRes.headers['content-type'] as string || '-').split(';')[0].trim()}`)
 					// Rewrite Location headers so redirects stay within /proxy/:appId.
