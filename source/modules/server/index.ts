@@ -65,6 +65,22 @@ class Server {
 		return this.#externalPort
 	}
 
+	// App-specific override registry for apps that need special handling.
+	// 'web'         — normal web app with HTML UI (default)
+	// 'api-only'    — no HTML UI, serves API only (e.g. Ollama)
+	// 'host-network' — binds to host network, not accessible from bridge (e.g. Tailscale)
+	#appKinds = new Map<string, 'web' | 'api-only' | 'host-network'>([
+		['ollama', 'api-only'],
+		['tailscale', 'host-network'],
+	])
+
+	// Cache for resolved host-network gateway probes
+	#hostGatewayCache = new Map<string, string>()
+
+	// Runs Nextcloud repair once per startup on first successful proxy request.
+	// Guarded by #nextcloudRepaired to prevent repeated repairs.
+	#nextcloudRepaired = false
+
 	constructor({umbreld}: ServerOptions) {
 		this.umbreld = umbreld
 		const {name} = this.constructor
@@ -158,6 +174,8 @@ class Server {
 							const target = `http://${ip}:${appPort}`
 							this.#cacheAppTarget(appId, target)
 							this.logger.log(`Proxy target [app-proxy] ${appId}: ${appHost}→${target}`)
+							// Auto-repair Nextcloud trusted domains on first successful resolution.
+							if (appId === 'nextcloud') this.#nextcloudRepaired = false // reset so repair fires
 							return target
 						}
 						this.logger.log(`Proxy target [app-proxy] ${appId}: ${appHost} has no umbrel_main_network IP`)
@@ -174,10 +192,20 @@ class Server {
 				if (svc === 'app_proxy' || svc === 'tor_proxy' || svc === 'i2p_daemon') continue
 				const networkMode: string = ((compose.services as any)[svc] ?? {})['network_mode'] ?? ''
 				if (networkMode === 'host' || networkMode.startsWith('service:') || networkMode.startsWith('container:')) {
-					const target = `http://host.docker.internal:${manifestPort}`
-					this.#cacheAppTarget(appId, target)
-					this.logger.log(`Proxy target [hostnet] ${appId}: ${svc}→${target}`)
-					return target
+					// Mark app as host-network so the proxy handler knows to use gateway probing
+					this.#appKinds.set(appId, 'host-network')
+					// Try to find a reachable host gateway
+					const gatewayTarget = await this.#probeHostGateway(manifestPort)
+					if (gatewayTarget) {
+						this.#cacheAppTarget(appId, gatewayTarget)
+						this.logger.log(`Proxy target [hostnet] ${appId}: ${svc}→${gatewayTarget}`)
+						return gatewayTarget
+					}
+					// Fallback: try host.docker.internal even if it failed before
+					const fallback = `http://host.docker.internal:${manifestPort}`
+					this.#cacheAppTarget(appId, fallback)
+					this.logger.log(`Proxy target [hostnet] ${appId}: ${svc}→${fallback} (unverified)`)
+					return fallback
 				}
 			}
 
@@ -205,6 +233,7 @@ class Server {
 						const target = `http://${ip}:${manifestPort}`
 						this.#cacheAppTarget(appId, target)
 						this.logger.log(`Proxy target [heuristic] ${appId}: ${chosenService}→${target}`)
+						if (appId === 'nextcloud') this.#nextcloudRepaired = false
 						return target
 					}
 					this.logger.log(`Proxy target [heuristic] ${appId}: ${chosenService} has no umbrel_main_network IP`)
@@ -234,6 +263,7 @@ class Server {
 					const target = `http://${ip}:${manifestPort}`
 					this.#cacheAppTarget(appId, target)
 					this.logger.log(`Proxy target [list+inspect] ${appId} → ${target}`)
+					if (appId === 'nextcloud') this.#nextcloudRepaired = false
 					return target
 				}
 				this.logger.log(`Proxy target [list+inspect] ${appId}: no IP in umbrel_main_network`)
@@ -253,6 +283,66 @@ class Server {
 		}
 
 		throw new Error(`Cannot resolve proxy target for app ${appId}: no running container found`)
+	}
+
+	// Probe the host network gateway for host-network apps (e.g. Tailscale).
+	// Tries the umbrel_main_network gateway first, then standard Docker gateway.
+	async #probeHostGateway(port: number): Promise<string | undefined> {
+		const cacheKey = `${port}`
+		if (this.#hostGatewayCache.has(cacheKey)) {
+			return this.#hostGatewayCache.get(cacheKey)
+		}
+
+		const candidates = [
+			`http://10.21.0.1:${port}`,
+			`http://172.17.0.1:${port}`,
+			`http://host.docker.internal:${port}`,
+		]
+
+		for (const candidate of candidates) {
+			try {
+				const controller = new AbortController()
+				const timeout = setTimeout(() => controller.abort(), 1500)
+				await fetch(candidate, {
+					signal: controller.signal,
+					method: 'HEAD',
+				})
+				clearTimeout(timeout)
+				this.#hostGatewayCache.set(cacheKey, candidate)
+				this.logger.log(`Host gateway probe: ${candidate} ✓`)
+				return candidate
+			} catch {
+				this.logger.log(`Host gateway probe: ${candidate} ✗`)
+			}
+		}
+
+		return undefined
+	}
+
+	// Run Nextcloud occ commands to configure trusted domains and reverse proxy headers.
+	// Idempotent — safe to call multiple times.
+	// Uses real forwarded hostname from the incoming request.
+	async #repairNextcloud(appId: string, forwardedHost: string): Promise<void> {
+		const compose = await this.umbreld.apps.getApp(appId).readCompose()
+		const services = Object.keys(compose.services ?? {})
+		const webService = services.find((s) => s !== 'app_proxy' && s !== 'tor_proxy' && s !== 'i2p_daemon') ?? 'web'
+		const containerName = `${appId}_${webService}_1`
+		const occCommands = [
+			['config:system:set', 'trusted_domains', '1', `--value=${forwardedHost}`],
+			['config:system:set', 'overwrite.cli.url', `--value=https://${forwardedHost}/proxy/${appId}`],
+			['config:system:set', 'overwriteprotocol', '--value=https'],
+			['config:system:set', 'overwritewebroot', `--value=/proxy/${appId}`],
+			['config:system:set', 'trusted_proxies', '0', '--value=10.21.0.0/16'],
+		]
+
+		for (const [cmd, ...args] of occCommands) {
+			try {
+				await $`docker exec -u www-data ${containerName} php occ ${cmd} ${args}`
+				this.logger.log(`Nextcloud repair: occ ${cmd} ${args.join(' ')} ✓`)
+			} catch (error) {
+				this.logger.log(`Nextcloud repair: occ ${cmd} ${args.join(' ')} failed — ${(error as Error).message}`)
+			}
+		}
 	}
 
 	// rewriteLocation: true  → path-based proxy: rewrites Location headers and HTML bodies
@@ -303,6 +393,9 @@ class Server {
 				changeOrigin: true,
 				proxyTimeout: 30000,
 				timeout: 30000,
+				ws: true,
+				cookiePathRewrite: {[prefix]: '/'},
+				cookieDomainRewrite: {[prefix]: ''},
 				pathRewrite: (path: string): string => {
 					// Strip the /proxy/<appId> prefix so the backend receives the correct path.
 					// e.g. /proxy/jellyfin/web/ -> /web/
@@ -320,19 +413,33 @@ class Server {
 			}
 
 			if (rewriteLocation) {
-				proxyOptions.onProxyReq = (proxyReq: http.ClientRequest, proxyReqOptions: http.RequestOptions) => {
+				proxyOptions.onProxyReq = (proxyReq: http.ClientRequest, _proxyReqOptions: http.RequestOptions, req: http.IncomingMessage) => {
 					// Disable compression so HTML can be rewritten as plain text.
 					proxyReq.setHeader('Accept-Encoding', 'identity')
-					// Remove forwarded-host so apps don't use the external hostname when
-					// generating redirect URLs — otherwise Jellyfin and similar apps produce
-					// absolute redirects like https://os.dominic.pw/web/ that miss the
-					// /proxy/:appId prefix and land on the Umbrel SPA 404 page.
-					proxyReq.removeHeader('x-forwarded-host')
-					proxyReq.removeHeader('x-forwarded-port')
+
+					// For apps behind path-based proxy:
+					// - Nextcloud needs X-Forwarded-* headers to generate correct URLs
+					// - Other apps (Jellyfin, etc): remove them to prevent absolute redirect URLs
+					//   that would bypass the /proxy/<appId> prefix and land on the Umbrel SPA 404.
+					const forwardedHost = (req.headers['x-forwarded-host'] as string) || 'os.dominic.pw'
+					const forwardedProto = (req.headers['x-forwarded-proto'] as string) || 'https'
+					const forwardedPort = (req.headers['x-forwarded-port'] as string) || '443'
+
+					if (appId === 'nextcloud') {
+						proxyReq.setHeader('X-Forwarded-Host', forwardedHost)
+						proxyReq.setHeader('X-Forwarded-Proto', forwardedProto)
+						proxyReq.setHeader('X-Forwarded-Port', forwardedPort)
+						proxyReq.setHeader('X-Forwarded-Prefix', prefix)
+					} else {
+						proxyReq.removeHeader('x-forwarded-host')
+						proxyReq.removeHeader('x-forwarded-proto')
+						proxyReq.removeHeader('x-forwarded-port')
+					}
+
 					// Manually rewrite the proxy path to strip the /proxy/<appId> prefix.
 					// This is the authoritative path rewrite — overrides whatever path HPM
 					// derived from request.url, ensuring the backend receives the correct path.
-					const inPath = proxyReqOptions.path ?? '/'
+					const inPath = _proxyReqOptions.path ?? '/'
 					const outPath = inPath.startsWith(`${prefix}/`) ? inPath.slice(prefix.length) : (inPath === prefix ? '/' : inPath)
 					proxyReq.path = outPath
 					this.logger.log(`[${appId}] proxyReq: ${inPath} → ${target}${outPath}`)
@@ -344,12 +451,11 @@ class Server {
 					// Handles root-relative paths (/web/) AND absolute URLs from any host
 					// (http://10.21.0.4:8096/web/, https://os.dominic.pw/web/, etc.).
 					const loc = proxyRes.headers.location
+					const refresh = proxyRes.headers.refresh
 					if (typeof loc === 'string') {
 						if (loc.startsWith('/') && !loc.startsWith('//') && !loc.startsWith(`${prefix}/`) && loc !== prefix) {
-							// Root-relative: /web/ → /proxy/jellyfin/web/
 							proxyRes.headers.location = `${prefix}${loc}`
 						} else if (/^https?:\/\//i.test(loc) && !loc.includes(`${prefix}/`)) {
-							// Absolute URL from any host: extract path and prefix it
 							try {
 								const locUrl = new URL(loc)
 								if (!locUrl.pathname.startsWith(prefix)) {
@@ -358,6 +464,24 @@ class Server {
 							} catch {
 								// unparseable URL — leave as-is
 							}
+						}
+					}
+					if (typeof refresh === 'string' && refresh.includes('url=')) {
+						const urlMatch = refresh.match(/url=(.+)/i)
+						if (urlMatch) {
+							const origUrl = urlMatch[1].trim().replace(/^["']|["']$/g, '')
+							let newUrl: string
+							if (origUrl.startsWith('/') && !origUrl.startsWith('//')) {
+								newUrl = `${prefix}${origUrl}`
+							} else {
+								try {
+									const u = new URL(origUrl)
+									newUrl = `${prefix}${u.pathname}${u.search}${u.hash}`
+								} catch {
+									newUrl = origUrl
+								}
+							}
+							proxyRes.headers.refresh = refresh.replace(/url=.+/i, `url=${newUrl}`)
 						}
 					}
 
@@ -515,6 +639,37 @@ class Server {
 				return response.redirect(302, `/proxy/${appId}/web/`)
 			}
 
+			// Canonical redirect: /proxy/<app> (no trailing slash) → /proxy/<app>/
+			if (parsedUrl.pathname === `/proxy/${appId}`) {
+				return response.redirect(302, `${parsedUrl.pathname}/${parsedUrl.search || ''}`)
+			}
+
+			// Ollama has no web UI — serve a landing page at root, proxy API routes normally
+			if (appId === 'ollama' && appPath === '/') {
+				const openWebUIInstalled = this.umbreld.apps.instances.some((a) => a.id === 'open-webui')
+				response.set('Content-Type', 'text/html; charset=utf-8')
+				return response.send(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Ollama</title></head>
+<body style="font-family:system-ui;max-width:600px;margin:60px auto;padding:0 20px">
+  <h1>Ollama API is running</h1>
+  <p>This app provides a raw AI model API and does not include a web interface.</p>
+  <p>Connect to this AI backend from other apps using:</p>
+  <ul>
+    <li><strong>Internal URL:</strong> <code>http://ollama_ollama_1:11434</code></li>
+    <li><strong>Proxied API:</strong> <a href="/proxy/ollama/api">/proxy/ollama/api</a></li>
+  </ul>
+  <h2>Recommended UI</h2>
+  <p>Install <strong>Open WebUI</strong> from the Umbrel App Store for a full ChatGPT-style interface.</p>
+  ${openWebUIInstalled ? '<p><a href="/proxy/open-webui/" style="background:#0066cc;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;display:inline-block">Open WebUI →</a></p>' : '<p><a href="/app-store/open-webui" style="background:#0066cc;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;display:inline-block">Install Open WebUI →</a></p>'}
+  <h2>API Endpoints</h2>
+  <ul>
+    <li><a href="/proxy/ollama/api/tags">/api/tags</a> — List available models</li>
+    <li><a href="/proxy/ollama/api/version">/api/version</a> — Server version</li>
+  </ul>
+</body></html>`)
+			}
+
 			if (umbreldDomain) {
 				const proto = this.#externalPort === 443 ? 'https' : 'http'
 				const search = parsedUrl.search || ''
@@ -523,6 +678,36 @@ class Server {
 
 			try {
 				const target = await this.#resolveAppTarget(appId)
+
+				// Repair Nextcloud trusted domains once per startup on first successful resolution.
+				// Uses the real forwarded host from the incoming request, defaulting to os.dominic.pw.
+				if (appId === 'nextcloud' && !this.#nextcloudRepaired) {
+					const forwardedHost = Array.isArray(request.headers['x-forwarded-host'])
+						? request.headers['x-forwarded-host'][0]
+						: (request.headers['x-forwarded-host'] as string) || 'os.dominic.pw'
+					this.#repairNextcloud(appId, forwardedHost)
+						.then(() => {
+							this.#nextcloudRepaired = true
+							this.logger.log(`Nextcloud repair completed with forwardedHost=${forwardedHost}`)
+						})
+						.catch((err) => this.logger.log(`Nextcloud repair failed: ${err.message}`))
+				}
+
+				// Detect host-network apps whose gateway probe failed
+				const kind = this.#appKinds.get(appId)
+				if (kind === 'host-network') {
+					const targetUrl = new URL(target)
+					if (targetUrl.hostname === 'host.docker.internal' && !this.#hostGatewayCache.has(targetUrl.port)) {
+						// Gateway probe never succeeded — do not attempt proxy, return clear error
+						response.status(502)
+						return response.json({
+							error: 'App not reachable',
+							detail: `The "${appId}" app runs on the host network and its web UI is not reachable from inside the Umbrel container. Gateway probe failed for all candidates.`,
+							suggestion: 'Access Tailscale directly at its host IP or via the Tailscale app on your devices.',
+						})
+					}
+				}
+
 				// Manually set request.url to the stripped path so the proxied app
 				// receives the correct path (e.g. /web/) without the /proxy/:appId prefix.
 				request.url = `${appPath}${parsedUrl.search || ''}`
@@ -644,7 +829,17 @@ class Server {
 		})
 
 		// Diagnostic endpoint: hit /api/debug/proxy/:appId to see target resolution details
+		// PROTECTED: only accessible from localhost or with valid proxy auth token.
+		// Exposes container IPs, names, and internal network details — never expose publicly.
 		this.app.get('/api/debug/proxy/:appId', async (request, response) => {
+			const token = request?.cookies?.UMBREL_PROXY_TOKEN
+			const isValid = await this.verifyProxyToken(token).catch(() => false)
+			if (!isValid) {
+				// Check if request comes from localhost (container itself)
+				const remoteAddr = request.socket.remoteAddress ?? ''
+				const isLocal = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1'
+				if (!isLocal) return response.status(401).json({error: 'unauthorized'})
+			}
 			const {appId} = request.params
 			try {
 				// Bypass cache so every call re-resolves

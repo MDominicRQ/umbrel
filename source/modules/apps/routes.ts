@@ -59,8 +59,11 @@ export const apps = router({
 					const showCredentialsBeforeOpen = hasCredentials && !(await app.store.get('hideCredentialsBeforeOpen'))
 
 					// Route apps through the umbreld reverse proxy so they work behind HTTPS/Traefik.
+					// Normalize path: empty string, null, or "/" all mean "/" with trailing slash.
 					// Jellyfin serves its UI at /web/ — use that as the entry point.
-					const appPath = (app.id === 'jellyfin' && (!path || path === '/')) ? '/web/' : (path ?? '/')
+					const rawPath = path ?? '/'
+					const normalizedPath = rawPath === '' || rawPath === '/' ? '/' : rawPath.replace(/\/$/, '') + '/'
+					const appPath = (app.id === 'jellyfin' && (normalizedPath === '/' || normalizedPath === '')) ? '/web/' : normalizedPath
 					const proxyPath = `/proxy/${app.id}${appPath}`
 
 					return {
