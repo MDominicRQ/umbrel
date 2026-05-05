@@ -1730,7 +1730,7 @@ lightning:10009
 
 				// Proxy WebSocket upgrades for installed apps (path-based fallback when no umbreldDomain)
 
-				const appProxyMatch = pathname.match(/^\/proxy\/([a-z0-9][a-z0-9-]*)(/.*)?$/)
+				const appProxyMatch = pathname.match(/^\/proxy\/([a-z0-9][a-z0-9-]*)(\/.*)?$/)
 
 				if (appProxyMatch) {
 
