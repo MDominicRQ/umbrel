@@ -121,7 +121,7 @@ function buildInjectScript(prefix: string): string {
 	const org = 'location.origin'
 	const wso = "(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host"
 	const rw = `function rw(u){if(typeof u!=='string')return u;if(u.startsWith(p))return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;if(u.startsWith(${org}+'/')&&!u.startsWith(${org}+p+'/'))return ${org}+p+u.slice(${org}.length);return u;}`
-	const rwws = `function rwws(u){if(typeof u!=='string')return u;var l=location.protocol==='https:'?'wss:':'ws:',h=location.host,p2='${prefix.replace('/', '\\/')}';if(u.startsWith(p2))return u;if(u.includes('://'))return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47)return l+'//'+h+p2+u;return u;}`
+	const rwws = `function rwws(u){if(typeof u!=='string')return u;var l=location.protocol==='https:'?'wss:':'ws:',h=location.host,p2='${prefix.replace('/', '\\/')}';if(u.startsWith(p2))return u;if(u.includes('://')){try{var u2=new URL(u);if(u2.host===h)return l+'//'+h+p2+u2.pathname+u2.search;}catch(e){}return u;}if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47)return l+'//'+h+p2+u;return u;}`
 	return `<script>(function(){var p=${p};${rw};${rwws};var oF=window.fetch;window.fetch=function(u,i){return oF.call(this,rw(u),i);};var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};var oW=window.WebSocket;window.WebSocket=function(u,q){return q?new oW(rwws(u),q):new oW(rwws(u));};Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}})();</script>`
 }
 
@@ -922,6 +922,7 @@ await fetch(candidate, {
 
 				delete proxyRes.headers['content-security-policy']
 				delete proxyRes.headers['referrer-policy']
+				proxyRes.headers['referrer-policy'] = 'same-origin'
 				delete proxyRes.headers['content-length']
 				delete proxyRes.headers['content-encoding']
 
@@ -2008,7 +2009,7 @@ lightning:10009
 
 					target: process.env.UMBREL_UI_PROXY,
 
-					ws: true,
+ws: false,
 
 					logProvider: () => ({
 
