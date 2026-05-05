@@ -121,7 +121,7 @@ function buildInjectScript(prefix: string): string {
 	const org = 'location.origin'
 	const h = 'location.host'
 	const wso = "(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host"
-	const rwwsBody = `if(u.startsWith(p))return u;if(u.includes('://')){try{var u2=new URL(u);if(u2.host===h)return l+'//'+h+p+u2.pathname+u2.search;}catch(e){}return u;}if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47)return l+'//'+h+p+u;return u;`
+	const rwwsBody = `if(u.startsWith(p))return u;if(u.includes('://')){try{var u2=new URL(u);if(u2.host===h)return l+p+u2.pathname+u2.search;}catch(e){}return u;}if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47)return l+p+u;return u;`
 	const rw = `function rw(u){if(typeof u!=='string'){if(u&&u.url)u=String(u.url);else if(u&&u.href)u=String(u.href);else return u;}if(u.startsWith(p))return u;if(u.startsWith(${org}+'/')&&!u.startsWith(${org}+p+'/'))return ${org}+p+u.slice(${org}.length);try{if(new URL(u).host===location.host&&u.startsWith('/'))return p+u;}catch(e){}if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;return u;}`
 	const rwws = `function rwws(u){if(typeof u!=='string'){if(u&&(u.href||(u.url&&typeof u.url!=='string')))u=String(u.href||u.url);else if(u&&u.url)u=String(u.url);else return u;}var l=${wso};if(u.startsWith(p))return u;${rwwsBody}}`
 	return `<script>(function(){var p=${p};var o=${org};var h=${h};${rw};${rwws};var oF=window.fetch;window.fetch=function(u,i){if(u&&u instanceof Request){var r=new Request(rw(u.url),u);if(i)return oF.call(this,r,i);return oF.call(this,r);}return oF.call(this,rw(u),i);};var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};var oW=window.WebSocket;window.WebSocket=function(u,q){var s=u&&u.href?String(u.href):(u&&u.url?String(u.url):rw(u));return q?new oW(rwws(s),q):new oW(rwws(s));};Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;var oES=window.EventSource;window.EventSource=function(u,q){return new oES(rw(u),q);};EventSource.prototype=oES.prototype;var oWkr=window.Worker;window.Worker=function(u,c){return new oWkr(rw(u),c);};var oSW=window.SharedWorker;window.SharedWorker=function(u,c){return new oSW(rw(u),c);};if(navigator.serviceWorker){var oSWR=navigator.serviceWorker.register.bind(navigator.serviceWorker);navigator.serviceWorker.register=function(u,opts){return oSWR(rw(u),opts);};}var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}})();</script>`
@@ -962,7 +962,7 @@ await fetch(candidate, {
 							body = injectScript + body
 						}
 						body = rewriteContent(body, prefix)
-						response.setHeader('Set-Cookie', `umbrel_proxy_app=${appId}; Path=/; SameSite=Lax; Max-Age=300`)
+						res.setHeader('Set-Cookie', `umbrel_proxy_app=${appId}; Path=/; SameSite=Lax; Max-Age=300`)
 					}
 
 					if (isJs) {
@@ -1160,6 +1160,8 @@ await fetch(candidate, {
 			// and all inline scripts from the proxied app.
 
 			response.removeHeader('Content-Security-Policy')
+			response.removeHeader('Referrer-Policy')
+			response.setHeader('Referrer-Policy', 'same-origin')
 
 
 
