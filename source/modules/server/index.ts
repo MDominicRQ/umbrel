@@ -119,10 +119,12 @@ function rewriteRedirectLocation(loc: string | undefined, prefix: string): strin
 function buildInjectScript(prefix: string): string {
 	const p = JSON.stringify(prefix)
 	const org = 'location.origin'
+	const h = 'location.host'
 	const wso = "(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host"
-	const rw = `function rw(u){if(typeof u!=='string')return u;if(u.startsWith(p))return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;if(u.startsWith(${org}+'/')&&!u.startsWith(${org}+p+'/'))return ${org}+p+u.slice(${org}.length);return u;}`
-	const rwws = `function rwws(u){if(typeof u!=='string')return u;var l=location.protocol==='https:'?'wss:':'ws:',h=location.host,p2='${prefix.replace('/', '\\/')}';if(u.startsWith(p2))return u;if(u.includes('://')){try{var u2=new URL(u);if(u2.host===h)return l+'//'+h+p2+u2.pathname+u2.search;}catch(e){}return u;}if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47)return l+'//'+h+p2+u;return u;}`
-	return `<script>(function(){var p=${p};${rw};${rwws};var oF=window.fetch;window.fetch=function(u,i){return oF.call(this,rw(u),i);};var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};var oW=window.WebSocket;window.WebSocket=function(u,q){return q?new oW(rwws(u),q):new oW(rwws(u));};Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}})();</script>`
+	const rwwsBody = `if(u.startsWith(p))return u;if(u.includes('://')){try{var u2=new URL(u);if(u2.host===h)return l+'//'+h+p+u2.pathname+u2.search;}catch(e){}return u;}if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47)return l+'//'+h+p+u;return u;`
+	const rw = `function rw(u){if(typeof u!=='string'){if(u&&u.url)u=String(u.url);else if(u&&u.href)u=String(u.href);else return u;}if(u.startsWith(p))return u;if(u.startsWith(${org}+'/')&&!u.startsWith(${org}+p+'/'))return ${org}+p+u.slice(${org}.length);try{if(new URL(u).host===location.host&&u.startsWith('/'))return p+u;}catch(e){}if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;return u;}`
+	const rwws = `function rwws(u){if(typeof u!=='string'){if(u&&(u.href||(u.url&&typeof u.url!=='string')))u=String(u.href||u.url);else if(u&&u.url)u=String(u.url);else return u;}var l=${wso};if(u.startsWith(p))return u;${rwwsBody}}`
+	return `<script>(function(){var p=${p};var o=${org};var h=${h};${rw};${rwws};var oF=window.fetch;window.fetch=function(u,i){if(u&&u instanceof Request){var r=new Request(rw(u.url),u);if(i)return oF.call(this,r,i);return oF.call(this,r);}return oF.call(this,rw(u),i);};var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};var oW=window.WebSocket;window.WebSocket=function(u,q){var s=u&&u.href?String(u.href):(u&&u.url?String(u.url):rw(u));return q?new oW(rwws(s),q):new oW(rwws(s));};Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;var oES=window.EventSource;window.EventSource=function(u,q){return new oES(rw(u),q);};EventSource.prototype=oES.prototype;var oWkr=window.Worker;window.Worker=function(u,c){return new oWkr(rw(u),c);};var oSW=window.SharedWorker;window.SharedWorker=function(u,c){return new oSW(rw(u),c);};if(navigator.serviceWorker){var oSWR=navigator.serviceWorker.register.bind(navigator.serviceWorker);navigator.serviceWorker.register=function(u,opts){return oSWR(rw(u),opts);};}var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}})();</script>`
 }
 
 function rewriteContent(body: string, prefix: string): string {
@@ -139,14 +141,11 @@ function rewriteJsContent(body: string, prefix: string): string {
 	body = body.replace(/fetch\('(?!\/)([^']*)'\)/g, `fetch('${prefix}/$1')`)
 	body = body.replace(/new WebSocket\(["']\/(?!\/)([^"']*)\"/g, `new WebSocket("${prefix}/$1"`)
 	body = body.replace(/new WebSocket\('(?!\/)([^']*)'\)/g, `new WebSocket('${prefix}/$1')`)
-	body = body.replace(/"(\/_app\/[^"]+)"/g, `"${prefix}$1"`)
-	body = body.replace(/'(\/_app\/[^']+)'/g, `'${prefix}$1'`)
-	body = body.replace(/"(\/api\/[^"]+)"/g, `"${prefix}$1"`)
-	body = body.replace(/'(\/api\/[^']+)'/g, `'${prefix}$1'`)
-	body = body.replace(/"(\/assets\/[^"]+)"/g, `"${prefix}$1"`)
-	body = body.replace(/'(\/assets\/[^']+)'/g, `'${prefix}$1'`)
-	body = body.replace(/"(\/models\/[^"]+)"/g, `"${prefix}$1"`)
-	body = body.replace(/'(\/models\/[^']+)'/g, `'${prefix}$1'`)
+	const prefixes = ['/_app', '/api', '/assets', '/static', '/manifest', '/favicon', '/robots', '/sw', '/service-worker', '/ws', '/socket.io', '/ollama', '/models', '/health', '/api/v1']
+	for (const p of prefixes) {
+		body = body.replace(new RegExp(`"(${p}[^"]*)"`, 'g'), `"${prefix}$1"`)
+		body = body.replace(new RegExp(`'(${p}[^']*)'`, 'g'), `'${prefix}$1'`)
+	}
 	return body
 }
 
@@ -160,6 +159,17 @@ function getAppIdFromReferer(request: http.IncomingMessage): string | undefined 
 	} catch {
 		return undefined
 	}
+}
+
+function getAppIdFromRequest(request: http.IncomingMessage | express.Request): string | undefined {
+	const refererId = getAppIdFromReferer(request as http.IncomingMessage)
+	if (refererId) return refererId
+
+	const cookies = (request as express.Request).cookies
+	const cookieId = cookies?.['umbrel_proxy_app']
+	if (cookieId && /^[a-z0-9][a-z0-9-]*$/.test(cookieId)) return cookieId
+
+	return undefined
 }
 
 const ROOT_ABSOLUTE_PATTERNS = [
@@ -819,7 +829,7 @@ await fetch(candidate, {
 			changeOrigin: true,
 			proxyTimeout: 30000,
 			timeout: 30000,
-			ws: true,
+			ws: false,
 			cookiePathRewrite: {'/': prefix},
 			cookieDomainRewrite: {'*': ''},
 			pathRewrite: (path: string): string => {
@@ -952,6 +962,7 @@ await fetch(candidate, {
 							body = injectScript + body
 						}
 						body = rewriteContent(body, prefix)
+						response.setHeader('Set-Cookie', `umbrel_proxy_app=${appId}; Path=/; SameSite=Lax; Max-Age=300`)
 					}
 
 					if (isJs) {
@@ -1626,7 +1637,7 @@ lightning:10009
 			if (!isRootAbsoluteAppPath(pathname)) return next()
 			if (isUmbrelOwnedPath(pathname)) return next()
 
-			const appId = getAppIdFromReferer(request)
+			const appId = getAppIdFromRequest(request)
 			if (!appId) return next()
 
 			try {
@@ -1769,6 +1780,27 @@ lightning:10009
 
 				}
 
+
+				// Root-absolute WebSocket fallback (e.g. /api/terminal, /ws, /socket.io)
+				// Proxies to the correct app when browser connects to root path
+				if (isRootAbsoluteAppPath(pathname) && !isUmbrelOwnedPath(pathname)) {
+					const upgradeReq = request as any
+					if (upgradeReq.headers?.cookie) {
+						const cookieMatch = upgradeReq.headers.cookie.match(/umbrel_proxy_app=([a-z0-9][a-z0-9-]*)/)
+						if (cookieMatch) {
+							const appId = cookieMatch[1]
+							try {
+								const target = await this.#resolveAppTarget(appId)
+								const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true})
+								this.logger.log(`[${appId}] root-absolute wsUpgrade: ${pathname}${rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : ''} → ${target}${pathname}`)
+								;(proxy as any).upgrade(request, socket, head)
+								return
+							} catch (err) {
+								this.logger.error(`[${appId}] root-absolute wsUpgrade failed: ${(err as Error).message}`)
+							}
+						}
+					}
+				}
 
 
 				const wss = this.webSocketRouter.get(pathname)
