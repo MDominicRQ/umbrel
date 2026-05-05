@@ -121,7 +121,7 @@ function buildInjectScript(prefix: string): string {
 	const org = 'location.origin'
 	const wso = "(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host"
 	const rw = `function rw(u){if(typeof u!=='string')return u;if(u.startsWith(p))return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return p+u;if(u.startsWith(${org}+'/')&&!u.startsWith(${org}+p+'/'))return ${org}+p+u.slice(${org}.length);return u;}`
-	const rwws = `function rwws(u){if(typeof u!=='string')return u;if(u.startsWith(p))return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47&&!u.startsWith(p))return ${wso}+p+u;if(u.startsWith(${wso}+'/')&&!u.startsWith(${wso}+p+'/'))return ${wso}+p+u.slice(${wso}.length);return u;}`
+	const rwws = `function rwws(u){if(typeof u!=='string')return u;var l=location.protocol==='https:'?'wss:':'ws:',h=location.host,p2='${prefix.replace('/', '\\/')}';if(u.startsWith(p2))return u;if(u.includes('://'))return u;if(u.charCodeAt(0)===47&&u.charCodeAt(1)!==47)return l+'//'+h+p2+u;return u;}`
 	return `<script>(function(){var p=${p};${rw};${rwws};var oF=window.fetch;window.fetch=function(u,i){return oF.call(this,rw(u),i);};var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};var oW=window.WebSocket;window.WebSocket=function(u,q){return q?new oW(rwws(u),q):new oW(rwws(u));};Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}})();</script>`
 }
 
@@ -725,12 +725,8 @@ class Server {
 
 				const timeout = setTimeout(() => controller.abort(), 1500)
 
-				await fetch(candidate, {
-
+await fetch(candidate, {
 					signal: controller.signal,
-
-					method: 'HEAD',
-
 				})
 
 				clearTimeout(timeout)
@@ -925,6 +921,7 @@ class Server {
 				if (appId === 'nextcloud') return
 
 				delete proxyRes.headers['content-security-policy']
+				delete proxyRes.headers['referrer-policy']
 				delete proxyRes.headers['content-length']
 				delete proxyRes.headers['content-encoding']
 
@@ -947,13 +944,14 @@ class Server {
 
 					let body = Buffer.concat(chunks).toString('utf8')
 
-					if (/<head\b/i.test(body)) {
-						body = body.replace(/(<head\b[^>]*)(>)/i, `$1$2${injectScript}`, 1)
-					} else {
-						body = injectScript + body
+					if (isHtml) {
+						if (/<head\b/i.test(body)) {
+							body = body.replace(/(<head\b[^>]*)(>)/i, `$1$2${injectScript}`, 1)
+						} else {
+							body = injectScript + body
+						}
+						body = rewriteContent(body, prefix)
 					}
-
-					body = rewriteContent(body, prefix)
 
 					if (isJs) {
 						body = rewriteJsContent(body, prefix)
@@ -1492,21 +1490,30 @@ lightning:10009
 
 
 
-				// Detect host-network apps whose gateway probe failed
-
+// Detect host-network apps whose gateway probe failed
 				const kind = this.#appKinds.get(appId)
-
 				if (kind === 'host-network') {
 					const targetUrl = new URL(target)
 					if (targetUrl.hostname === 'host.docker.internal' && !this.#hostGatewayCache.has(targetUrl.port)) {
 						response.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'})
-						return response.end(`<!DOCTYPE html>
+						if (appId === 'tailscale') {
+							return response.end(`<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Tailscale</title></head>
 <body>
 <h1>Tailscale</h1>
 <p>This app uses your host network and cannot be accessed through the web proxy.</p>
 <p>Access Tailscale directly from within your network, or via the Tailscale admin panel at <a href="https://login.tailscale.com">login.tailscale.com</a>.</p>
+</body>
+</html>`)
+						}
+						return response.end(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>${appId}</title></head>
+<body>
+<h1>${appId}</h1>
+<p>This app uses your host network and cannot be accessed through the web proxy.</p>
+<p>Try accessing the app directly from within your network.</p>
 </body>
 </html>`)
 					}
@@ -1723,7 +1730,7 @@ lightning:10009
 
 				// Proxy WebSocket upgrades for installed apps (path-based fallback when no umbreldDomain)
 
-				const appProxyMatch = pathname.match(/^\/proxy\/([^/]+)(\/.*)?$/)
+				const appProxyMatch = pathname.match(/^\/proxy\/([a-z0-9][a-z0-9-]*)(/.*)?$/)
 
 				if (appProxyMatch) {
 
