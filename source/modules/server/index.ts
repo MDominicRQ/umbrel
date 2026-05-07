@@ -159,7 +159,7 @@ function rewriteJsContent(body: string, prefix: string): string {
 	}
 	// Repair already-malformed URLs: /proxy/nodes/ appearing inside string literals
 	// e.g., from previous buggy rewrites that produced "/proxy/open-webui/../nodes/..."
-	body = body.replace(/(["'`])\/proxy\/nodes\//g, `$1/proxy/nodes/`)
+	body = body.replace(/(["'`])\/proxy\/nodes\//g, `$1${prefix}/nodes/`)
 	return body
 }
 
@@ -942,7 +942,7 @@ class Server {
 					proxyReq.removeHeader('x-forwarded-port')
 				}
 
-				const inPath = proxyReq.path ?? req.url ?? '/'
+				const inPath = req.url ?? proxyReq.path ?? '/'
 				const outPath = inPath.startsWith(`${prefix}/`)
 					? inPath.slice(prefix.length)
 					: (inPath === prefix ? '/' : inPath)
