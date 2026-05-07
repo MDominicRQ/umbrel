@@ -694,6 +694,7 @@ class Server {
 			}
 
 		} catch (composeError) {
+			if (composeError instanceof HostNetworkTargetUnavailableError) throw composeError
 
 			this.logger.log(`Proxy target [compose] ${appId}: read failed — ${(composeError as Error).message}`)
 
