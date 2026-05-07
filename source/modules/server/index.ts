@@ -931,6 +931,11 @@ class Server {
 					proxyReq.setHeader('X-Forwarded-Host', forwardedHost)
 					proxyReq.setHeader('X-Forwarded-Proto', forwardedProto)
 					proxyReq.setHeader('X-Forwarded-Port', forwardedPort)
+					if (appId === 'nextcloud') {
+						proxyReq.setHeader('X-Forwarded-Prefix', prefix)
+						proxyReq.setHeader('Host', forwardedHost.split(':')[0])
+						proxyReq.setHeader('Overwritehost', forwardedHost.split(':')[0])
+					}
 				} else {
 					proxyReq.removeHeader('x-forwarded-host')
 					proxyReq.removeHeader('x-forwarded-proto')
@@ -1250,7 +1255,7 @@ class Server {
 			// /proxy/nodes/file.js thinking it was an app, but "nodes" is not an app.
 			// Reconstruct the real appId from Referer/cookie and rebase the path.
 			if (!this.#isInstalledApp(appId)) {
-				const recoveredAppId = getAppIdFromReferer(request) ?? getProxyAppCookie(request)
+				const recoveredAppId = getAppIdFromReferer(request) ?? getProxyAppCookie(request) ?? this.#getRecentProxyApp(request)
 				const recoveredAppPath = `/${appId}${appPath === '/' ? '' : appPath}`
 
 				if (
