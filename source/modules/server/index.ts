@@ -157,15 +157,28 @@ function getAppIdFromReferer(request: http.IncomingMessage): string | undefined 
 	}
 }
 
-function getAppIdFromRequest(request: http.IncomingMessage | express.Request): string | undefined {
-	const refererId = getAppIdFromReferer(request as http.IncomingMessage)
-	if (refererId) return refererId
-
+function getProxyAppCookie(request: http.IncomingMessage | express.Request): string | undefined {
 	const cookies = (request as express.Request).cookies
 	const cookieId = cookies?.['umbrel_proxy_app']
 	if (cookieId && /^[a-z0-9][a-z0-9-]*$/.test(cookieId)) return cookieId
-
 	return undefined
+}
+
+function getAppIdFromRequest(request: http.IncomingMessage | express.Request): string | undefined {
+	return getAppIdFromReferer(request as http.IncomingMessage) ?? getProxyAppCookie(request)
+}
+
+function isRefererRequiredRootPath(pathname: string): boolean {
+	return [
+		/^\/_app\//, /^\/_app$/,
+		/^\/assets\//, /^\/assets$/,
+		/^\/static\//, /^\/static$/,
+		/^\/nodes\//, /^\/nodes$/,
+		/^\/manifest\.json$/,
+		/^\/favicon\.ico$/, /^\/favicon\.png$/,
+		/^\/robots\.txt$/,
+		/^\/sw\.js$/, /^\/service-worker\.js$/,
+	].some((pattern) => pattern.test(pathname))
 }
 
 const ROOT_ABSOLUTE_PATTERNS = [
@@ -220,6 +233,10 @@ class Server {
 	// Cache for app_proxy container names resolved by Strategy 1 (appId -> container hostname)
 
 	#appProxyContainerCache = new Map<string, string>()
+
+	#isInstalledApp(appId: string): boolean {
+		return this.umbreld.apps.instances.some((app) => app.id === appId)
+	}
 
 	// External port as seen by clients — updated from X-Forwarded-Port/Proto on every HTTP request
 
@@ -1168,6 +1185,25 @@ await fetch(candidate, {
 
 			const appPath = match[2] || '/'
 
+
+			// Recover malformed /proxy/<root-absolute-path> — browser asked for
+			// /proxy/nodes/file.js thinking it was an app, but "nodes" is not an app.
+			// Reconstruct the real appId from Referer/cookie and rebase the path.
+			if (!this.#isInstalledApp(appId)) {
+				const recoveredAppId = getAppIdFromReferer(request) ?? getProxyAppCookie(request)
+				const recoveredPath = `/${recoveredAppId}${appPath === '/' ? '' : appPath}`
+
+				if (
+					recoveredAppId &&
+					recoveredAppId !== appId &&
+					this.#isInstalledApp(recoveredAppId) &&
+					isRootAbsoluteAppPath(recoveredPath)
+				) {
+					this.logger.log(`[${recoveredAppId}] recovered malformed proxy path: ${parsedUrl.pathname} → ${recoveredPath}`)
+					appId = recoveredAppId
+					appPath = recoveredPath
+				}
+			}
 
 
 			// Jellyfin serves its UI at /web/ — redirect root /proxy/jellyfin/ there
