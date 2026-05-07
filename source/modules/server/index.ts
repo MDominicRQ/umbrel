@@ -1,5 +1,7 @@
 import http from 'node:http'
 
+import net from 'node:net'
+
 import process from 'node:process'
 
 import {promisify} from 'node:util'
@@ -80,6 +82,18 @@ const asyncHandler = (
 
 	}
 
+
+
+class HostNetworkTargetUnavailableError extends Error {
+	constructor(
+		readonly appId: string,
+		readonly port: number,
+		readonly probeTargets: string[],
+	) {
+		super(`Host-network app ${appId} is not reachable on port ${port}`)
+		this.name = 'HostNetworkTargetUnavailableError'
+	}
+}
 
 
 const wrapHandlersWithAsyncHandler = (router: express.Router) => {
@@ -508,35 +522,19 @@ class Server {
 				const networkMode: string = ((compose.services as any)[svc] ?? {})['network_mode'] ?? ''
 
 				if (networkMode === 'host' || networkMode.startsWith('service:') || networkMode.startsWith('container:')) {
-
-					// Mark app as host-network so the proxy handler knows to use gateway probing
-
 					this.#appKinds.set(appId, 'host-network')
-
-					// Try to find a reachable host gateway
-
 					const gatewayTarget = await this.#probeHostGateway(manifestPort)
-
 					if (gatewayTarget) {
-
 						this.#cacheAppTarget(appId, gatewayTarget)
-
 						this.logger.log(`Proxy target [hostnet] ${appId}: ${svc}→${gatewayTarget}`)
-
 						return gatewayTarget
-
 					}
-
-					// Fallback: try host.docker.internal even if it failed before
-
-					const fallback = `http://host.docker.internal:${manifestPort}`
-
-					this.#cacheAppTarget(appId, fallback)
-
-					this.logger.log(`Proxy target [hostnet] ${appId}: ${svc}→${fallback} (unverified)`)
-
-					return fallback
-
+					const probeTargets = [
+						`http://10.21.0.1:${manifestPort}`,
+						`http://172.17.0.1:${manifestPort}`,
+						`http://host.docker.internal:${manifestPort}`,
+					]
+					throw new HostNetworkTargetUnavailableError(appId, manifestPort, probeTargets)
 				}
 
 			}
@@ -738,40 +736,33 @@ class Server {
 
 
 		for (const candidate of candidates) {
-
-			try {
-
-				const controller = new AbortController()
-
-				const timeout = setTimeout(() => controller.abort(), 1500)
-
-await fetch(candidate, {
-					signal: controller.signal,
-				})
-
-				clearTimeout(timeout)
-
+			if (await this.#probeTcp(candidate)) {
 				this.#hostGatewayCache.set(cacheKey, candidate)
-
 				this.logger.log(`Host gateway probe: ${candidate} ✓`)
-
 				return candidate
-
-			} catch {
-
-				this.logger.log(`Host gateway probe: ${candidate} ✗`)
-
 			}
-
+			this.logger.log(`Host gateway probe: ${candidate} ✗`)
 		}
-
-
-
 		return undefined
-
 	}
 
-
+	async #probeTcp(target: string): Promise<boolean> {
+		return new Promise((resolve) => {
+			const url = new URL(target)
+			const socket = net.createConnection({
+				host: url.hostname,
+				port: Number(url.port),
+				timeout: 1500,
+			})
+			const done = (result: boolean) => {
+				socket.destroy()
+				resolve(result)
+			}
+			socket.once('connect', () => done(true))
+			socket.once('timeout', () => done(false))
+			socket.once('error', () => done(false))
+		})
+	}
 
 	// Run Nextcloud occ commands to configure trusted domains and reverse proxy headers.
 
@@ -1546,6 +1537,34 @@ lightning:10009
 			} catch (error) {
 
 				this.logger.error(`App proxy setup error for ${appId}`, error)
+
+				if (error instanceof HostNetworkTargetUnavailableError) {
+					response.status(502).set('Content-Type', 'text/html; charset=utf-8')
+					const probeList = error.probeTargets.map((t) => `<li><code>${t}</code></li>`).join('')
+					return response.send(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>${error.appId}</title></head>
+<body style="font-family:system-ui;max-width:760px;margin:60px auto;padding:0 20px;line-height:1.5">
+  <h1>${error.appId}</h1>
+  <p>This app uses Docker host networking and its port is not reachable from the Umbrel container.</p>
+
+  <h2>What was checked</h2>
+  <ul>
+    ${probeList}
+  </ul>
+
+  <h2>What this means</h2>
+  <p>The app may be bound to <code>127.0.0.1</code>, blocked by host firewall rules, not running, or not exposing its web UI on port <code>${error.port}</code>.</p>
+
+  <h2>Next checks</h2>
+  <ul>
+    <li>Confirm the app is listening on the host port <code>${error.port}</code>.</li>
+    <li>Confirm it binds to <code>0.0.0.0</code> or a host interface reachable from Docker bridge networks.</li>
+    <li>If this is Home Assistant, also configure trusted proxies before expecting reverse proxy access to work.</li>
+    <li>If this is Tailscale, use its intended admin/status interface if it does not expose a normal web UI.</li>
+  </ul>
+</body></html>`)
+				}
 
 				// For service-only apps, a 502 is confusing — they don't have a web UI anyway
 
