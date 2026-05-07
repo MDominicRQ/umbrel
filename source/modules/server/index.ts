@@ -134,17 +134,13 @@ function rewriteContent(body: string, prefix: string): string {
 }
 
 function rewriteJsContent(body: string, prefix: string): string {
-	body = body.replace(/import\(\/(?!\/)([^"']*)\)/g, `import(${prefix}/$1)`)
-	body = body.replace(/import\("(?!https?:\/\/)(?!\/)([^"]*)"\)/g, `import("${prefix}/$1")`)
-	body = body.replace(/import\('(?!https?:\/\/)(?!\/)([^']*)'\)/g, `import('${prefix}/$1')`)
-	body = body.replace(/(fetch|XMLHttpRequest)\(["']\/(?!\/)([^"']*)\"/g, `$1("${prefix}/$2"`)
-	body = body.replace(/fetch\('(?!\/)([^']*)'\)/g, `fetch('${prefix}/$1')`)
-	body = body.replace(/new WebSocket\(["']\/(?!\/)([^"']*)\"/g, `new WebSocket("${prefix}/$1"`)
-	body = body.replace(/new WebSocket\('(?!\/)([^']*)'\)/g, `new WebSocket('${prefix}/$1')`)
-	const prefixes = ['/_app', '/api', '/assets', '/static', '/manifest', '/favicon', '/robots', '/sw', '/service-worker', '/ws', '/socket.io', '/ollama', '/models', '/health', '/api/v1']
-	for (const p of prefixes) {
-		body = body.replace(new RegExp(`"(${p}[^"]*)"`, 'g'), `"${prefix}$1"`)
-		body = body.replace(new RegExp(`'(${p}[^']*)'`, 'g'), `'${prefix}$1'`)
+	const rootAbsolutes = ['/_app', '/api', '/assets', '/static', '/manifest', '/favicon', '/robots', '/sw', '/service-worker', '/ws', '/socket.io', '/ollama', '/models', '/health', '/api/v1', '/nodes']
+	for (const base of rootAbsolutes) {
+		body = body.replace(new RegExp(`"(https?://[^"]*)?${base}([^"]*)"`, 'g'), (match, protocol, rest) => {
+			if (protocol) return match
+			return `"${prefix}${base}${rest}"`
+		})
+		body = body.replace(new RegExp(`'(${base}[^']*)'`, 'g'), `'${prefix}$1'`)
 	}
 	return body
 }
@@ -185,6 +181,7 @@ const ROOT_ABSOLUTE_PATTERNS = [
 	/^\/ws\//, /^\/ws$/,
 	/^\/ollama\//, /^\/ollama$/,
 	/^\/models\//, /^\/models$/,
+	/^\/nodes\//, /^\/nodes$/,
 ]
 
 const UMBREL_OWNED_PATHS = ['/trpc', '/manager-api', '/api/files', '/api/debug']
@@ -1504,38 +1501,7 @@ lightning:10009
 
 
 
-// Detect host-network apps whose gateway probe failed
-				const kind = this.#appKinds.get(appId)
-				if (kind === 'host-network') {
-					const targetUrl = new URL(target)
-					if (targetUrl.hostname === 'host.docker.internal' && !this.#hostGatewayCache.has(targetUrl.port)) {
-						response.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'})
-						if (appId === 'tailscale') {
-							return response.end(`<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Tailscale</title></head>
-<body>
-<h1>Tailscale</h1>
-<p>This app uses your host network and cannot be accessed through the web proxy.</p>
-<p>Access Tailscale directly from within your network, or via the Tailscale admin panel at <a href="https://login.tailscale.com">login.tailscale.com</a>.</p>
-</body>
-</html>`)
-						}
-						return response.end(`<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>${appId}</title></head>
-<body>
-<h1>${appId}</h1>
-<p>This app uses your host network and cannot be accessed through the web proxy.</p>
-<p>Try accessing the app directly from within your network.</p>
-</body>
-</html>`)
-					}
-				}
-
-
-
-				// Manually set request.url to the stripped path so the proxied app
+// Manually set request.url to the stripped path so the proxied app
 
 				// receives the correct path (e.g. /web/) without the /proxy/:appId prefix.
 
