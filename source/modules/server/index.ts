@@ -155,7 +155,11 @@ function rewriteJsContent(body: string, prefix: string): string {
 			return `"${prefix}${base}${rest}"`
 		})
 		body = body.replace(new RegExp(`'(${base}[^']*)'`, 'g'), `'${prefix}$1'`)
+		body = body.replace(new RegExp(`\`(${base}[^\`]*)\``, 'g'), `\`${prefix}$1\``)
 	}
+	// Repair already-malformed URLs: /proxy/nodes/ appearing inside string literals
+	// e.g., from previous buggy rewrites that produced "/proxy/open-webui/../nodes/..."
+	body = body.replace(/(["'`])\/proxy\/nodes\//g, `$1/proxy/nodes/`)
 	return body
 }
 
