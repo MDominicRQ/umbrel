@@ -293,11 +293,11 @@ class Server {
 
 
 
-	// Cache for resolved host-network gateway probes
-
+// Cache for resolved host-network gateway probes
 	#hostGatewayCache = new Map<string, string>()
 
-
+	// Cache for host loopback bridge targets (appId → {target, expiresAt})
+	#hostBridgeCache = new Map<string, {target: string; expiresAt: number}>()
 
 	// Runs Nextcloud repair once per startup on first successful proxy request.
 
@@ -553,6 +553,14 @@ class Server {
 						this.logger.log(`Proxy target [hostnet] ${appId}: ${svc}→${gatewayTarget}`)
 						return gatewayTarget
 					}
+
+					const bridgeTarget = await this.#ensureHostLoopbackBridge(appId, manifestPort)
+					if (bridgeTarget) {
+						this.#cacheAppTarget(appId, bridgeTarget)
+						this.logger.log(`Proxy target [host bridge] ${appId}: ${svc}→${bridgeTarget}`)
+						return bridgeTarget
+					}
+
 					const probeTargets = await this.#getDockerGatewayCandidates(manifestPort)
 					throw new HostNetworkTargetUnavailableError(appId, manifestPort, probeTargets)
 				}
@@ -834,6 +842,108 @@ class Server {
 			socket.once('timeout', () => done(false))
 			socket.once('error', () => done(false))
 		})
+	}
+
+	#getHostBridgePort(appId: string, appPort: number): number {
+		let hash = 0
+		for (const char of appId) hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0
+		return 18000 + (Math.abs(hash) % 20000)
+	}
+
+	#getHostBridgeContainerName(appId: string): string {
+		return `umbrel-host-bridge-${appId}`
+	}
+
+	async #getDockerGatewayBindAddresses(): Promise<string[]> {
+		const addresses = new Set<string>()
+		try {
+			const self = await this.#docker.getContainer(process.env.HOSTNAME ?? '').inspect()
+			for (const network of Object.values(self.NetworkSettings?.Networks ?? {}) as any[]) {
+				if (network?.Gateway) addresses.add(network.Gateway)
+			}
+		} catch {
+		}
+		addresses.add('10.21.0.1')
+		addresses.add('172.17.0.1')
+		return [...addresses]
+	}
+
+	async #getSelfImage(): Promise<string> {
+		try {
+			const self = await this.#docker.getContainer(process.env.HOSTNAME ?? '').inspect()
+			return process.env.UMBREL_HOST_BRIDGE_IMAGE?.trim() || self.Config.Image
+		} catch {
+			return process.env.UMBREL_HOST_BRIDGE_IMAGE?.trim() || 'umbrel-os:local'
+		}
+	}
+
+	async #ensureHostLoopbackBridge(appId: string, targetPort: number): Promise<string | undefined> {
+		if (process.env.UMBREL_HOST_BRIDGE_ENABLED === 'false') return undefined
+
+		const cached = this.#hostBridgeCache.get(appId)
+		if (cached && Date.now() < cached.expiresAt) {
+			this.logger.log(`Proxy target [host bridge cache] ${appId} → ${cached.target}`)
+			return cached.target
+		}
+
+		const bridgePort = this.#getHostBridgePort(appId, targetPort)
+		const containerName = this.#getHostBridgeContainerName(appId)
+		const image = await this.#getSelfImage()
+		const bindAddresses = await this.#getDockerGatewayBindAddresses()
+
+		for (const bindAddress of bindAddresses) {
+			const target = `http://${bindAddress}:${bridgePort}`
+			if (await this.#probeTcp(target)) {
+				this.logger.log(`Proxy target [host bridge cache] ${appId} → ${target}`)
+				this.#hostBridgeCache.set(appId, {target, expiresAt: Date.now() + 60_000})
+				return target
+			}
+		}
+
+		try {
+			await this.#docker.getContainer(containerName).remove({force: true}).catch(() => undefined)
+
+			const bindAddress = bindAddresses[0]
+			if (!bindAddress) return undefined
+
+			const container = await this.#docker.createContainer({
+				Image: image,
+				name: containerName,
+				Entrypoint: ['socat'],
+				Cmd: [
+					'-d', '-d',
+					`TCP-LISTEN:${bridgePort},bind=${bindAddress},fork,reuseaddr`,
+					`TCP:127.0.0.1:${targetPort}`,
+				],
+				Labels: {
+					'umbrel.host-bridge': 'true',
+					'umbrel.host-bridge.app': appId,
+				},
+				HostConfig: {
+					NetworkMode: 'host',
+					RestartPolicy: {Name: 'unless-stopped'},
+				},
+			})
+
+			await container.start()
+
+			const target = `http://${bindAddress}:${bridgePort}`
+
+			for (let attempt = 0; attempt < 10; attempt++) {
+				if (await this.#probeTcp(target)) {
+					this.logger.log(`Proxy target [host bridge] ${appId}: ${target} → 127.0.0.1:${targetPort}`)
+					this.#hostBridgeCache.set(appId, {target, expiresAt: Date.now() + 60_000})
+					return target
+				}
+				await new Promise((resolve) => setTimeout(resolve, 300))
+			}
+
+			this.logger.log(`Proxy target [host bridge] ${appId}: bridge started but ${target} is not reachable`)
+			return undefined
+		} catch (error) {
+			this.logger.log(`Proxy target [host bridge] ${appId}: failed — ${(error as Error).message}`)
+			return undefined
+		}
 	}
 
 	// Run Nextcloud occ commands to configure trusted domains and reverse proxy headers.
