@@ -449,7 +449,13 @@ class Server {
 
 		const {port: manifestPort} = await app.readManifest()
 
-
+		const overrideTarget = this.#getHostProxyOverride(appId)
+		if (overrideTarget) {
+			this.#cacheAppTarget(appId, overrideTarget)
+			this.#appKinds.set(appId, 'host-network')
+			this.logger.log(`Proxy target [host override] ${appId} → ${overrideTarget}`)
+			return overrideTarget
+		}
 
 		try {
 

@@ -8,6 +8,9 @@ services:
     pid: host
     ports:
       - 80
+    environment:
+      UMBREL_HOST_PROXY_TARGET_HOME_ASSISTANT: ${UMBREL_HOST_PROXY_TARGET_HOME_ASSISTANT:-}
+      UMBREL_HOST_PROXY_TARGET_TAILSCALE: ${UMBREL_HOST_PROXY_TARGET_TAILSCALE:-}
     volumes:
       - umbrel_data:/data
       - /var/run/docker.sock:/var/run/docker.sock
