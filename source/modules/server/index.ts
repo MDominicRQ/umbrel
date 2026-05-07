@@ -740,6 +740,27 @@ class Server {
 	}
 
 
+	async #getDockerGatewayCandidates(port: number): Promise<string[]> {
+		const candidates = new Set<string>()
+
+		candidates.add(`http://host.docker.internal:${port}`)
+
+		try {
+			const self = await this.#docker.getContainer(process.env.HOSTNAME ?? '').inspect()
+			for (const network of Object.values(self.NetworkSettings?.Networks ?? {}) as any[]) {
+				if (network?.Gateway) {
+					candidates.add(`http://${network.Gateway}:${port}`)
+				}
+			}
+		} catch {
+		}
+
+		candidates.add(`http://10.21.0.1:${port}`)
+		candidates.add(`http://172.17.0.1:${port}`)
+
+		return [...candidates]
+	}
+
 	// Probe the host network gateway for host-network apps (e.g. Tailscale).
 
 	// Tries the umbrel_main_network gateway first, then standard Docker gateway.
@@ -756,15 +777,7 @@ class Server {
 
 
 
-		const candidates = [
-
-			`http://10.21.0.1:${port}`,
-
-			`http://172.17.0.1:${port}`,
-
-			`http://host.docker.internal:${port}`,
-
-		]
+		const candidates = await this.#getDockerGatewayCandidates(port)
 
 
 
