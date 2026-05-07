@@ -1800,6 +1800,10 @@ docker exec tailscale_web_1 tailscale status</pre>
     <li>Confirm the app is listening on the host port <code>${error.port}</code>.</li>
     <li>Confirm it binds to <code>0.0.0.0</code> or a host interface reachable from Docker bridge networks.</li>
     <li>Set a target override: <code>UMBREL_HOST_PROXY_TARGET_${error.appId.toUpperCase()}=http://host.docker.internal:${error.port}</code></li>
+    <li>Override configured: <code>${this.#getHostProxyOverride(error.appId) || 'none'}</code></li>
+    <li>Host bridge enabled: <code>${process.env.UMBREL_HOST_BRIDGE_ENABLED !== 'false' ? 'yes' : 'no'}</code></li>
+    <li>Bridge container: <code>${this.#getHostBridgeContainerName(error.appId)}</code></li>
+    <li>Expected bridge target: <code>http://10.21.0.1:${this.#getHostBridgePort(error.appId, error.port)}</code></li>
   `
 					}
 					return response.send(`<!DOCTYPE html>
@@ -2194,7 +2198,30 @@ docker exec tailscale_web_1 tailscale status</pre>
 
 				const target = await this.#resolveAppTarget(appId)
 
-				response.json({appId, port, target, containers: containers.map((c) => ({
+				const overrideTarget = this.#getHostProxyOverride(appId)
+
+				const bridgePort = this.#getHostBridgePort(appId, port)
+
+				const bridgeContainer = this.#getHostBridgeContainerName(appId)
+
+				const gatewayAddresses = await this.#getDockerGatewayBindAddresses()
+
+				const bridgeTarget = await this.#probeTcp(`http://${gatewayAddresses[0] || '10.21.0.1'}:${bridgePort}`).catch(() => false)
+					? `http://${gatewayAddresses[0]}:${bridgePort}`
+					: undefined
+
+				response.json({
+					appId,
+					port,
+					target,
+					overrideTarget,
+					hostBridge: {
+						enabled: process.env.UMBREL_HOST_BRIDGE_ENABLED !== 'false',
+						container: bridgeContainer,
+						port: bridgePort,
+						target: bridgeTarget,
+					},
+					containers: containers.map((c) => ({
 
 					id: c.Id.slice(0, 12),
 
