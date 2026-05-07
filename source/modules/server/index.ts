@@ -1166,11 +1166,11 @@ class Server {
 
 
 
-			const appId = match[1]
+			let appId = match[1]
 
 			// match[2] is the path after /proxy/<appId>, e.g. "/web/" or undefined
 
-			const appPath = match[2] || '/'
+			let appPath = match[2] || '/'
 
 
 			// Recover malformed /proxy/<root-absolute-path> — browser asked for
@@ -1178,17 +1178,17 @@ class Server {
 			// Reconstruct the real appId from Referer/cookie and rebase the path.
 			if (!this.#isInstalledApp(appId)) {
 				const recoveredAppId = getAppIdFromReferer(request) ?? getProxyAppCookie(request)
-				const recoveredPath = `/${recoveredAppId}${appPath === '/' ? '' : appPath}`
+				const recoveredAppPath = `/${appId}${appPath === '/' ? '' : appPath}`
 
 				if (
 					recoveredAppId &&
 					recoveredAppId !== appId &&
 					this.#isInstalledApp(recoveredAppId) &&
-					isRootAbsoluteAppPath(recoveredPath)
+					isRootAbsoluteAppPath(recoveredAppPath)
 				) {
-					this.logger.log(`[${recoveredAppId}] recovered malformed proxy path: ${parsedUrl.pathname} → ${recoveredPath}`)
+					this.logger.log(`[${recoveredAppId}] recovered malformed proxy path: ${parsedUrl.pathname} → ${recoveredAppPath}`)
 					appId = recoveredAppId
-					appPath = recoveredPath
+					appPath = recoveredAppPath
 				}
 			}
 
