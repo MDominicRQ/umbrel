@@ -21,12 +21,16 @@ Internet → Traefik/Dokploy → Umbrel wrapper container (bridge) → Normal ap
 | `UMBREL_HOST_PROXY_TARGET_<APP>` | Override host-network app target | `UMBREL_HOST_PROXY_TARGET_HOME_ASSISTANT=http://host.docker.internal:8123` |
 | `UMBREL_DOMAIN` | Enable subdomain routing | `UMBREL_DOMAIN=os.example.com` |
 | `UMBREL_APP_PROXY_NETWORK` | Network for new app containers | `umbrel_main_network` (default) |
+| `UMBREL_HOST_BRIDGE_ENABLED` | Enable/disable host-loopback bridge | `UMBREL_HOST_BRIDGE_ENABLED=false` |
+| `UMBREL_HOST_BRIDGE_IMAGE` | Custom image for bridge sidecar | `UMBREL_HOST_BRIDGE_IMAGE=umbrel-os:local` |
 
-## Host-Network App Configuration
+## Networking Model
 
-### Home Assistant
-
-Home Assistant must bind to `0.0.0.0` (not `127.0.0.1`) for Docker bridge containers to reach it.
+```
+Internet → Traefik/Dokploy → Umbrel wrapper container (bridge) → Normal apps (umbrel_main_network IP)
+                                                 ↓
+                              Host-network apps via bridge sidecar (socat → host loopback)
+```
 
 In `configuration.yaml`:
 ```yaml
@@ -35,11 +39,6 @@ http:
   trusted_proxies:
     - 10.21.0.0/16
     - 172.16.0.0/12
-```
-
-Set override:
-```bash
-UMBREL_HOST_PROXY_TARGET_HOME_ASSISTANT=http://host.docker.internal:8123
 ```
 
 ### Tailscale
@@ -60,11 +59,32 @@ Umbrel follows a similar model: one primary dashboard port, `/data` persistence,
 ## Troubleshooting
 
 1. **"App not found or not running"** — App container not found in `docker ps`. Check the app is installed and running.
-2. **Host-network app unreachable** — App binds to `127.0.0.1`. Use `UMBREL_HOST_PROXY_TARGET_<APP>` override.
+2. **Host-network app unreachable** — App binds to `127.0.0.1`. Check if bridge sidecar is running (`docker ps | grep bridge`). Use `/api/debug/proxy/<appId>` to diagnose bridge target.
 3. **Home Assistant returns 400** — Configure `trusted_proxies` in `configuration.yaml`.
 4. **Home Assistant UI loads but shows "Unable to connect"** — Check WebSocket support and HA version.
+5. **Bridge port conflict** — Ports 18000-37999 are reserved. Ensure no other service binds on these ports on Docker gateway interfaces.
 
-## Changes Implemented
+## Host-Loopback Bridge Architecture (VPS)
+
+On a VPS, host-network apps (Home Assistant, Tailscale) may bind to `127.0.0.1` instead of a bridge interface. The Umbrel container cannot reach host loopback directly from Docker bridge networks.
+
+Umbrel solves this with a **host-loopback bridge sidecar** — a small `socat` container that:
+1. Listens on a Docker bridge gateway IP (e.g., `10.21.0.1`) on a high port (18000-37999)
+2. Forwards TCP connections to `127.0.0.1:<appPort>` on the host
+
+```
+Umbrel container → http://10.21.0.1:18xxx → socat (host net) → 127.0.0.1:8123
+```
+
+**Security:** The bridge NEVER binds to `0.0.0.0` or public interfaces. It only binds to Docker gateway IPs that are reachable from within the Docker network.
+
+**Port:** Each app gets a deterministic port in 18000-37999 based on its appId — stable across restarts.
+
+**Disable:** Set `UMBREL_HOST_BRIDGE_ENABLED=false` to disable bridge creation.
+
+**Debug:** Check `/api/debug/proxy/<appId>` for bridge diagnostics including expected bridge target.
+
+## Changes Implemented (Fourth Pass)
 
 | Task | Change | Commit |
 |------|--------|--------|
@@ -76,3 +96,15 @@ Umbrel follows a similar model: one primary dashboard port, `/data` persistence,
 | 6 | Explicit host-network target overrides via env | (see git log) |
 | 7 | Host-loopback bridge (deferred) | — |
 | 8 | Home Assistant compatibility improvements | (see git log) |
+
+## Changes Implemented (Fourth Pass — 2026-05-07 Late)
+
+| Task | Change | Commit |
+|------|--------|--------|
+| 1 | Fix req.url authority for recovered malformed proxy paths | 34f8bcc |
+| 2 | Move host override before compose heuristics + compose env pass-through | 999df66 |
+| 3 | Add secure host-loopback bridge sidecars (socat) | (see git log) |
+| 4 | Add X-Forwarded-For + WebSocket forwarded headers | (see git log) |
+| 5 | Tailscale VPS-aware fallback page | (see git log) |
+| 6 | Expand diagnostics (bridge/override info) | (see git log) |
+| 7 | Update documentation | c002860 |
