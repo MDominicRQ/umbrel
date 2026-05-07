@@ -1769,11 +1769,32 @@ lightning:10009
     <li>Set the env var: <code>UMBREL_HOST_PROXY_TARGET_HOME_ASSISTANT=http://host.docker.internal:8123</code></li>
   `
 					} else if (error.appId === 'tailscale') {
-						nextChecks = `
-    <li>Tailscale may not expose a normal web UI.</li>
-    <li>Access Tailscale via its admin console at <a href="https://login.tailscale.com">login.tailscale.com</a>.</li>
-    <li>Or set <code>UMBREL_HOST_PROXY_TARGET_TAILSCALE=http://host.docker.internal:8240</code> if a web UI exists on that port.</li>
-  `
+						return response.send(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Tailscale</title></head>
+<body style="font-family:system-ui;max-width:760px;margin:60px auto;padding:0 20px;line-height:1.5">
+  <h1>Tailscale</h1>
+  <p>This is a host-network app that runs Tailscale on your VPS.</p>
+  <p>Tailscale does not provide a traditional local web interface on this VPS. To manage this node:</p>
+
+  <h2>Access Tailscale Admin Console</h2>
+  <ul>
+    <li><a href="https://login.tailscale.com/admin/machines">Open Tailscale Admin Console (login.tailscale.com)</a></li>
+  </ul>
+
+  <h2>Check Tailscale Status</h2>
+  <p>Run these commands on your VPS host to check Tailscale status:</p>
+  <pre>docker logs tailscale_web_1
+docker exec tailscale_web_1 tailscale status</pre>
+
+  <h2>What This Page Means</h2>
+  <p>The Umbrel proxy cannot reach Tailscale because it uses Docker host networking and either:</p>
+  <ul>
+    <li>Tailscale's web UI is not exposed on port 8240</li>
+    <li>The port is firewalled from the Docker bridge network</li>
+    <li>Tailscale is configured to only listen on a specific interface</li>
+  </ul>
+</body></html>`)
 					} else {
 						nextChecks = `
     <li>Confirm the app is listening on the host port <code>${error.port}</code>.</li>
