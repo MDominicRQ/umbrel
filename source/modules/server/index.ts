@@ -1047,6 +1047,11 @@ class Server {
 					proxyReq.setHeader('X-Forwarded-Host', forwardedHost)
 					proxyReq.setHeader('X-Forwarded-Proto', forwardedProto)
 					proxyReq.setHeader('X-Forwarded-Port', forwardedPort)
+					const forwardedFor = req.headers['x-forwarded-for']
+					const clientIp = Array.isArray(forwardedFor)
+						? forwardedFor[0]
+						: forwardedFor || req.socket.remoteAddress || ''
+					if (clientIp) proxyReq.setHeader('X-Forwarded-For', clientIp)
 					if (appId === 'nextcloud') {
 						proxyReq.setHeader('X-Forwarded-Prefix', prefix)
 						proxyReq.setHeader('Host', forwardedHost.split(':')[0])
@@ -1073,6 +1078,11 @@ class Server {
 				if (this.#shouldForwardProxyHeaders(appId)) {
 					proxyReq.setHeader('X-Forwarded-Host', fwdHost)
 					proxyReq.setHeader('X-Forwarded-Proto', 'https')
+					const forwardedFor = req.headers['x-forwarded-for']
+					const clientIp = Array.isArray(forwardedFor)
+						? forwardedFor[0]
+						: forwardedFor || req.socket.remoteAddress || ''
+					if (clientIp) proxyReq.setHeader('X-Forwarded-For', clientIp)
 				}
 				this.logger.log(`[${appId}] wsUpgrade: ${req.url} → ${target}`)
 			}
