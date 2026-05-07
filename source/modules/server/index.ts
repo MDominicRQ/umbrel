@@ -518,6 +518,9 @@ class Server {
 
 
 			// ── Strategy 2: host network mode ───────────────────────────────────────
+			// For apps with network_mode: host, we cannot reach them via Docker DNS.
+			// On a VPS, the container and host share the same network namespace when using host-mode.
+			// Try: (1) explicit override env var, (2) Docker gateway probes, (3) error with diagnostic page.
 
 			const services = Object.keys(compose.services ?? {})
 
@@ -946,8 +949,10 @@ class Server {
 				const fwdHost = (req.headers['x-forwarded-host'] as string) || 'os.dominic.pw'
 				proxyReq.setHeader('Host', fwdHost)
 				proxyReq.setHeader('Origin', `https://${fwdHost}`)
-				proxyReq.setHeader('X-Forwarded-Host', fwdHost)
-				proxyReq.setHeader('X-Forwarded-Proto', 'https')
+				if (this.#shouldForwardProxyHeaders(appId)) {
+					proxyReq.setHeader('X-Forwarded-Host', fwdHost)
+					proxyReq.setHeader('X-Forwarded-Proto', 'https')
+				}
 				this.logger.log(`[${appId}] wsUpgrade: ${req.url} → ${target}`)
 			}
 
@@ -1617,6 +1622,34 @@ lightning:10009
 				if (error instanceof HostNetworkTargetUnavailableError) {
 					response.status(502).set('Content-Type', 'text/html; charset=utf-8')
 					const probeList = error.probeTargets.map((t) => `<li><code>${t}</code></li>`).join('')
+					let nextChecks = ''
+					if (error.appId === 'home-assistant') {
+						nextChecks = `
+    <li>Confirm the app is listening on the host port <code>${error.port}</code>.</li>
+    <li>Confirm it binds to <code>0.0.0.0</code> (not <code>127.0.0.1</code>).</li>
+    <li>In <code>configuration.yaml</code>, configure:</li>
+    <ul>
+      <li><code>http:</code></li>
+      <li><code>  use_x_forwarded_for: true</code></li>
+      <li><code>  trusted_proxies:</code></li>
+      <li><code>    - 10.21.0.0/16</code></li>
+      <li><code>    - 172.16.0.0/12</code></li>
+    </ul>
+    <li>Set the env var: <code>UMBREL_HOST_PROXY_TARGET_HOME_ASSISTANT=http://host.docker.internal:8123</code></li>
+  `
+					} else if (error.appId === 'tailscale') {
+						nextChecks = `
+    <li>Tailscale may not expose a normal web UI.</li>
+    <li>Access Tailscale via its admin console at <a href="https://login.tailscale.com">login.tailscale.com</a>.</li>
+    <li>Or set <code>UMBREL_HOST_PROXY_TARGET_TAILSCALE=http://host.docker.internal:8240</code> if a web UI exists on that port.</li>
+  `
+					} else {
+						nextChecks = `
+    <li>Confirm the app is listening on the host port <code>${error.port}</code>.</li>
+    <li>Confirm it binds to <code>0.0.0.0</code> or a host interface reachable from Docker bridge networks.</li>
+    <li>Set a target override: <code>UMBREL_HOST_PROXY_TARGET_${error.appId.toUpperCase()}=http://host.docker.internal:${error.port}</code></li>
+  `
+					}
 					return response.send(`<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>${error.appId}</title></head>
@@ -1634,10 +1667,7 @@ lightning:10009
 
   <h2>Next checks</h2>
   <ul>
-    <li>Confirm the app is listening on the host port <code>${error.port}</code>.</li>
-    <li>Confirm it binds to <code>0.0.0.0</code> or a host interface reachable from Docker bridge networks.</li>
-    <li>If this is Home Assistant, also configure trusted proxies before expecting reverse proxy access to work.</li>
-    <li>If this is Tailscale, use its intended admin/status interface if it does not expose a normal web UI.</li>
+    ${nextChecks}
   </ul>
 </body></html>`)
 				}
