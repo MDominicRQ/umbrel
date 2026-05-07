@@ -529,17 +529,22 @@ class Server {
 
 				if (networkMode === 'host' || networkMode.startsWith('service:') || networkMode.startsWith('container:')) {
 					this.#appKinds.set(appId, 'host-network')
+
+					// Check explicit override first
+					const overrideTarget = this.#getHostProxyOverride(appId)
+					if (overrideTarget) {
+						this.#cacheAppTarget(appId, overrideTarget)
+						this.logger.log(`Proxy target [host override] ${appId}: ${svc}→${overrideTarget}`)
+						return overrideTarget
+					}
+
 					const gatewayTarget = await this.#probeHostGateway(manifestPort)
 					if (gatewayTarget) {
 						this.#cacheAppTarget(appId, gatewayTarget)
 						this.logger.log(`Proxy target [hostnet] ${appId}: ${svc}→${gatewayTarget}`)
 						return gatewayTarget
 					}
-					const probeTargets = [
-						`http://10.21.0.1:${manifestPort}`,
-						`http://172.17.0.1:${manifestPort}`,
-						`http://host.docker.internal:${manifestPort}`,
-					]
+					const probeTargets = await this.#getDockerGatewayCandidates(manifestPort)
 					throw new HostNetworkTargetUnavailableError(appId, manifestPort, probeTargets)
 				}
 
@@ -739,6 +744,18 @@ class Server {
 		return entry.appId
 	}
 
+
+	#getHostProxyOverride(appId: string): string | undefined {
+		const key = `UMBREL_HOST_PROXY_TARGET_${appId.toUpperCase().replace(/-/g, '_')}`
+		const value = process.env[key]?.trim()
+		if (!value) return undefined
+		try {
+			const url = new URL(value)
+			if (url.protocol === 'http:' || url.protocol === 'https:') return value
+		} catch {
+		}
+		return undefined
+	}
 
 	async #getDockerGatewayCandidates(port: number): Promise<string[]> {
 		const candidates = new Set<string>()
