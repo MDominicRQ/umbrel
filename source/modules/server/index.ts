@@ -164,10 +164,6 @@ function getProxyAppCookie(request: http.IncomingMessage | express.Request): str
 	return undefined
 }
 
-function getAppIdFromRequest(request: http.IncomingMessage | express.Request): string | undefined {
-	return getAppIdFromReferer(request as http.IncomingMessage) ?? getProxyAppCookie(request)
-}
-
 function isRefererRequiredRootPath(pathname: string): boolean {
 	return [
 		/^\/_app\//, /^\/_app$/,
@@ -1641,12 +1637,17 @@ lightning:10009
 			if (!isRootAbsoluteAppPath(pathname)) return next()
 			if (isUmbrelOwnedPath(pathname)) return next()
 
-			const appId = getAppIdFromRequest(request)
+			const refererBasedAppId = getAppIdFromReferer(request)
+			if (isRefererRequiredRootPath(pathname) && !refererBasedAppId) return next()
+
+			const appId = refererBasedAppId ?? getProxyAppCookie(request)
 			if (!appId) return next()
+			if (!this.#isInstalledApp(appId)) return next()
 
 			try {
 				const target = await this.#resolveAppTarget(appId)
-				this.logger.log(`[${appId}] root-absolute proxy: ${pathname}${search || ''} (via Referer)`)
+				const via = refererBasedAppId ? 'Referer' : 'cookie'
+				this.logger.log(`[${appId}] root-absolute proxy: ${pathname}${search || ''} (via ${via})`)
 				const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true})
 				proxy(request, response, next)
 			} catch (err) {
