@@ -854,6 +854,9 @@ class Server {
 		if (rewriteLocation) {
 			proxyOptions.onProxyReq = (proxyReq: http.ClientRequest, req: http.IncomingMessage) => {
 				proxyReq.setHeader('Accept-Encoding', 'identity')
+				proxyReq.removeHeader('if-none-match')
+				proxyReq.removeHeader('if-modified-since')
+				proxyReq.removeHeader('if-unmodified-since')
 
 				const forwardedHost = (req.headers['x-forwarded-host'] as string) || 'os.dominic.pw'
 				const forwardedProto = (req.headers['x-forwarded-proto'] as string) || 'https'
@@ -937,6 +940,10 @@ class Server {
 				proxyRes.headers['referrer-policy'] = 'same-origin'
 				delete proxyRes.headers['content-length']
 				delete proxyRes.headers['content-encoding']
+				delete proxyRes.headers['etag']
+				delete proxyRes.headers['last-modified']
+				delete proxyRes.headers['cache-control']
+				proxyRes.headers['cache-control'] = 'no-store'
 
 				const chunks: Buffer[] = []
 				const origWrite = res.write.bind(res)
@@ -957,6 +964,8 @@ class Server {
 
 					let body = Buffer.concat(chunks).toString('utf8')
 
+					res.setHeader('Set-Cookie', `umbrel_proxy_app=${appId}; Path=/; SameSite=Lax; Max-Age=3600`)
+
 					if (isHtml) {
 						if (/<head\b/i.test(body)) {
 							body = body.replace(/(<head\b[^>]*)(>)/i, `$1$2${injectScript}`, 1)
@@ -964,7 +973,6 @@ class Server {
 							body = injectScript + body
 						}
 						body = rewriteContent(body, prefix)
-						res.setHeader('Set-Cookie', `umbrel_proxy_app=${appId}; Path=/; SameSite=Lax; Max-Age=300`)
 					}
 
 					if (isJs) {
@@ -1190,6 +1198,13 @@ class Server {
 					this.logger.log(`[${recoveredAppId}] recovered malformed proxy path: ${parsedUrl.pathname} → ${recoveredAppPath}`)
 					appId = recoveredAppId
 					appPath = recoveredAppPath
+				}
+				else if (isRootAbsoluteAppPath(recoveredAppPath)) {
+					this.logger.log(`[proxy] malformed proxy path has no app context: ${parsedUrl.pathname}`)
+					return response.status(409).json({
+						error: 'Could not recover proxied app context',
+						path: recoveredAppPath,
+					})
 				}
 			}
 
