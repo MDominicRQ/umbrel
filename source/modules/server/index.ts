@@ -722,6 +722,11 @@ class Server {
 		})
 	}
 
+	#shouldForwardProxyHeaders(appId: string): boolean {
+		const kind = this.#appKinds.get(appId)
+		return appId === 'nextcloud' || kind === 'host-network'
+	}
+
 	#getRecentProxyApp(request: http.IncomingMessage): string | undefined {
 		const entry = this.#recentProxyApps.get(this.#getProxyClientKey(request))
 		if (!entry) return undefined
@@ -885,13 +890,10 @@ class Server {
 				const forwardedProto = (req.headers['x-forwarded-proto'] as string) || 'https'
 				const forwardedPort = (req.headers['x-forwarded-port'] as string) || '443'
 
-				if (appId === 'nextcloud') {
+				if (this.#shouldForwardProxyHeaders(appId)) {
 					proxyReq.setHeader('X-Forwarded-Host', forwardedHost)
 					proxyReq.setHeader('X-Forwarded-Proto', forwardedProto)
 					proxyReq.setHeader('X-Forwarded-Port', forwardedPort)
-					proxyReq.setHeader('X-Forwarded-Prefix', prefix)
-					proxyReq.setHeader('Host', forwardedHost.split(':')[0])
-					proxyReq.setHeader('Overwritehost', forwardedHost.split(':')[0])
 				} else {
 					proxyReq.removeHeader('x-forwarded-host')
 					proxyReq.removeHeader('x-forwarded-proto')
