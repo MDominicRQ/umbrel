@@ -244,6 +244,8 @@ class Server {
 
 	#appProxyContainerCache = new Map<string, string>()
 
+	#recentProxyApps = new Map<string, {appId: string; expiresAt: number}>()
+
 	#isInstalledApp(appId: string): boolean {
 		return this.umbreld.apps.instances.some((app) => app.id === appId)
 	}
@@ -706,6 +708,27 @@ class Server {
 
 	}
 
+	#getProxyClientKey(request: http.IncomingMessage): string {
+		const forwardedFor = request.headers['x-forwarded-for']
+		const ip = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor
+		const ua = request.headers['user-agent'] ?? ''
+		return `${ip ?? (request.socket as any).remoteAddress ?? 'unknown'}|${ua}`
+	}
+
+	#rememberProxyApp(request: http.IncomingMessage, appId: string) {
+		this.#recentProxyApps.set(this.#getProxyClientKey(request), {
+			appId,
+			expiresAt: Date.now() + 60 * 60 * 1000,
+		})
+	}
+
+	#getRecentProxyApp(request: http.IncomingMessage): string | undefined {
+		const entry = this.#recentProxyApps.get(this.#getProxyClientKey(request))
+		if (!entry) return undefined
+		if (Date.now() > entry.expiresAt) return undefined
+		if (!this.#isInstalledApp(entry.appId)) return undefined
+		return entry.appId
+	}
 
 
 	// Probe the host network gateway for host-network apps (e.g. Tailscale).
@@ -1515,6 +1538,7 @@ lightning:10009
 
 				const target = await this.#resolveAppTarget(appId)
 
+				this.#rememberProxyApp(request, appId)
 
 
 				// Repair Nextcloud trusted domains once per startup on first successful resolution.
@@ -1673,15 +1697,18 @@ lightning:10009
 			if (isUmbrelOwnedPath(pathname)) return next()
 
 			const refererBasedAppId = getAppIdFromReferer(request)
-			if (isRefererRequiredRootPath(pathname) && !refererBasedAppId) return next()
+			const cookieBasedAppId = getProxyAppCookie(request)
+			const recentAppId = this.#getRecentProxyApp(request)
 
-			const appId = refererBasedAppId ?? getProxyAppCookie(request)
+			if (isRefererRequiredRootPath(pathname) && !refererBasedAppId && !cookieBasedAppId && !recentAppId) return next()
+
+			const appId = refererBasedAppId ?? cookieBasedAppId ?? recentAppId
 			if (!appId) return next()
 			if (!this.#isInstalledApp(appId)) return next()
 
 			try {
 				const target = await this.#resolveAppTarget(appId)
-				const via = refererBasedAppId ? 'Referer' : 'cookie'
+				const via = refererBasedAppId ? 'Referer' : cookieBasedAppId ? 'cookie' : 'recent'
 				this.logger.log(`[${appId}] root-absolute proxy: ${pathname}${search || ''} (via ${via})`)
 				const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true})
 				proxy(request, response, next)
