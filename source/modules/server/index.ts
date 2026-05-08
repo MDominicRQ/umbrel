@@ -224,6 +224,19 @@ function isUmbrelOwnedPath(pathname: string): boolean {
 	return UMBREL_OWNED_PATHS.some(p => pathname.startsWith(p))
 }
 
+function getRootAbsoluteProxyAppId(
+	pathname: string,
+	refererAppId: string | undefined,
+	cookieAppId: string | undefined,
+	recentAppId: string | undefined,
+): string | undefined {
+	const requiresReferer = isRefererRequiredRootPath(pathname)
+	if (requiresReferer) {
+		return refererAppId
+	}
+	return refererAppId ?? cookieAppId ?? recentAppId
+}
+
 class Server {
 
 	umbreld: Umbreld
@@ -1922,15 +1935,13 @@ docker exec tailscale_web_1 tailscale status</pre>
 			const cookieBasedAppId = getProxyAppCookie(request)
 			const recentAppId = this.#getRecentProxyApp(request)
 
-			if (isRefererRequiredRootPath(pathname) && !refererBasedAppId && !cookieBasedAppId && !recentAppId) return next()
-
-			const appId = refererBasedAppId ?? cookieBasedAppId ?? recentAppId
+			const appId = getRootAbsoluteProxyAppId(pathname, refererBasedAppId, cookieBasedAppId, recentAppId)
 			if (!appId) return next()
 			if (!this.#isInstalledApp(appId)) return next()
 
 			try {
 				const target = await this.#resolveAppTarget(appId)
-				const via = refererBasedAppId ? 'Referer' : cookieBasedAppId ? 'cookie' : 'recent'
+				const via = refererBasedAppId ? 'Referer' : cookieBasedAppId ? 'cookie' : recentAppId ? 'recent' : 'none'
 				this.logger.log(`[${appId}] root-absolute proxy: ${pathname}${search || ''} (via ${via})`)
 				const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true})
 				proxy(request, response, next)
