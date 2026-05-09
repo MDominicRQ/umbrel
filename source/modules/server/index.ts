@@ -479,10 +479,14 @@ class Server {
 
 		const overrideTarget = this.#getHostProxyOverride(appId)
 		if (overrideTarget) {
-			this.#cacheAppTarget(appId, overrideTarget)
-			this.#appKinds.set(appId, 'host-network')
-			this.logger.log(`Proxy target [host override] ${appId} → ${overrideTarget}`)
-			return overrideTarget
+			this.logger.log(`Proxy target [host override probe] ${appId} → ${overrideTarget}`)
+			if (await this.#probeTcp(overrideTarget)) {
+				this.#cacheAppTarget(appId, overrideTarget)
+				this.#appKinds.set(appId, 'host-network')
+				this.logger.log(`Proxy target [host override] ${appId} → ${overrideTarget}`)
+				return overrideTarget
+			}
+			this.logger.log(`Proxy target [host override unreachable] ${appId} → ${overrideTarget}, falling back to bridge`)
 		}
 
 		try {
