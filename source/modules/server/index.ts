@@ -141,9 +141,17 @@ function buildInjectScript(prefix: string): string {
 	return `<script>(function(){var p=${p};var o=${org};var h=${h};${rw};${rwws};var oF=window.fetch;window.fetch=function(u,i){if(u&&u instanceof Request){var r=new Request(rw(u.url),u);if(i)return oF.call(this,r,i);return oF.call(this,r);}return oF.call(this,rw(u),i);};var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};var oW=window.WebSocket;window.WebSocket=function(u,q){var s=u&&u.href?String(u.href):(u&&u.url?String(u.url):rw(u));return q?new oW(rwws(s),q):new oW(rwws(s));};Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;var oES=window.EventSource;window.EventSource=function(u,q){return new oES(rw(u),q);};EventSource.prototype=oES.prototype;var oWkr=window.Worker;window.Worker=function(u,c){return new oWkr(rw(u),c);};var oSW=window.SharedWorker;window.SharedWorker=function(u,c){return new oSW(rw(u),c);};if(navigator.serviceWorker){var oSWR=navigator.serviceWorker.register.bind(navigator.serviceWorker);navigator.serviceWorker.register=function(u,opts){return oSWR(rw(u),opts);};}var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}})();</script>`
 }
 
-function rewriteContent(body: string, prefix: string): string {
+export function rewriteContent(body: string, prefix: string): string {
 	body = body.replace(/((?:href|src|action|poster|data-src|data-href)=["'])\/(?!\/|proxy\/)/g, `$1${prefix}/`)
 	body = body.replace(/(\burl\(["']?)\/(?!\/|proxy\/)/g, `$1${prefix}/`)
+	const scriptModulePattern = /(<script[^>]*type=["']module["'][^>]*>)([\s\S]*?)<\/script>/gi
+	body = body.replace(scriptModulePattern, (match, openTag, scriptBody) => {
+		const rewritten = scriptBody
+			.replace(/(import\s+(?:{[^}]*}\s+from\s+)?)(')(\/[^']+')/g, `$1${prefix}$3`)
+			.replace(/(import\s+(?:{[^}]*}\s+from\s+)?)(")(\/[^"]+")/g, `$1${prefix}$3`)
+			.replace(/(import\s+(?:{[^}]*}\s+from\s+)?`)(\/[^`]+`)/g, `$1${prefix}$3`)
+		return `${openTag}${rewritten}</script>`
+	})
 	return body
 }
 
