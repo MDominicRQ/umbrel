@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
 	isRefererRequiredRootPath,
 	getRootAbsoluteProxyAppId,
+	isImmutableChunkPath,
 } from './index.js'
 
 describe('isRefererRequiredRootPath', () => {
@@ -122,5 +123,65 @@ describe('getRootAbsoluteProxyAppId', () => {
 			const result = getRootAbsoluteProxyAppId('/assets/index.js', undefined, 'open-webui', undefined)
 			expect(result).toBe(undefined)
 		})
+	})
+})
+
+describe('isImmutableChunkPath', () => {
+	it('returns true for /_app/immutable/chunks/foo.js', () => {
+		expect(isImmutableChunkPath('/_app/immutable/chunks/foo.js')).toBe(true)
+	})
+	it('returns true for /_app/immutable/entry/start.js', () => {
+		expect(isImmutableChunkPath('/_app/immutable/entry/start.js')).toBe(true)
+	})
+	it('returns true for /_app/immutable', () => {
+		expect(isImmutableChunkPath('/_app/immutable')).toBe(true)
+	})
+	it('returns false for /_app/foo.js', () => {
+		expect(isImmutableChunkPath('/_app/foo.js')).toBe(false)
+	})
+	it('returns false for /_app/immutable/../chunks/foo.js', () => {
+		expect(isImmutableChunkPath('/_app/immutable/../chunks/foo.js')).toBe(false)
+	})
+})
+
+describe('getRootAbsoluteProxyAppId with immutable chunks', () => {
+	it('returns cookieAppId for /_app/immutable/chunks/foo.js when no referer', () => {
+		const result = getRootAbsoluteProxyAppId(
+			'/_app/immutable/chunks/foo.js',
+			undefined,
+			'open-webui',
+			undefined,
+		)
+		expect(result).toBe('open-webui')
+	})
+	it('returns recentAppId for /_app/immutable/entry/start.js when no referer or cookie', () => {
+		const result = getRootAbsoluteProxyAppId(
+			'/_app/immutable/entry/start.js',
+			undefined,
+			undefined,
+			'open-webui',
+		)
+		expect(result).toBe('open-webui')
+	})
+	it('returns refererAppId for /_app/immutable/chunks/foo.js when referer present', () => {
+		const result = getRootAbsoluteProxyAppId(
+			'/_app/immutable/chunks/foo.js',
+			'jellyfin',
+			'open-webui',
+			undefined,
+		)
+		expect(result).toBe('jellyfin')
+	})
+})
+
+describe('isRefererRequiredRootPath — unchanged behavior', () => {
+	it('still returns true for /_app/foo.js (non-immutable)', () => {
+		expect(isRefererRequiredRootPath('/_app/foo.js')).toBe(true)
+	})
+	it('still returns true for /_app (root)', () => {
+		expect(isRefererRequiredRootPath('/_app')).toBe(true)
+	})
+	it('still returns true for /assets/foo.js', () => {
+		expect(isRefererRequiredRootPath('/assets/foo.js')).toBe(true)
 	})
 })
