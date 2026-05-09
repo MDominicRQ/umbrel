@@ -199,6 +199,35 @@ export function isImmutableChunkPath(pathname: string): boolean {
 	return /^\/_app\/immutable\//.test(pathname) || /^\/_app\/immutable$/.test(pathname)
 }
 
+const ROOT_ABSOLUTE_PATTERNS = [
+	/^\/_app\//, /^\/_app$/,
+	/^\/api\//, /^\/api$/,
+	/^\/assets\//, /^\/assets$/,
+	/^\/static\//, /^\/static$/,
+	/^\/manifest\.json$/,
+	/^\/favicon\.ico$/, /^\/favicon\.png$/,
+	/^\/robots\.txt$/,
+	/^\/sw\.js$/, /^\/service-worker\.js$/,
+	/^\/socket\.io\//,
+	/^\/ws\//, /^\/ws$/,
+	/^\/ollama\//, /^\/ollama$/,
+	/^\/models\//, /^\/models$/,
+	/^\/nodes\//, /^\/nodes$/,
+]
+
+const UMBREL_OWNED_PATHS = ['/trpc', '/manager-api', '/api/files', '/api/debug']
+
+function isRootAbsoluteAppPath(pathname: string): boolean {
+	for (const pattern of ROOT_ABSOLUTE_PATTERNS) {
+		if (pattern.test(pathname)) return true
+	}
+	return false
+}
+
+function isUmbrelOwnedPath(pathname: string): boolean {
+	return UMBREL_OWNED_PATHS.some(p => pathname.startsWith(p))
+}
+
 export function getRootAbsoluteProxyAppId(
 	pathname: string,
 	refererAppId: string | undefined,
