@@ -1955,7 +1955,10 @@ docker exec tailscale_web_1 tailscale status</pre>
 			const recentAppId = this.#getRecentProxyApp(request)
 
 			const appId = getRootAbsoluteProxyAppId(pathname, refererBasedAppId, cookieBasedAppId, recentAppId)
-			if (!appId) return next()
+			if (!appId) {
+				this.logger.log(`root-absolute proxy: ${pathname} could not be resolved (no referer/cookie/recent), falling through`)
+				return next()
+			}
 			if (!this.#isInstalledApp(appId)) return next()
 
 			try {
