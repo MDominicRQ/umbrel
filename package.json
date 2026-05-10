@@ -1,7 +1,8 @@
 {
   "devDependencies": {
     "@types/node": "^25.6.0",
-    "fs-extra": "^11.3.4"
+    "fs-extra": "^11.3.4",
+    "vitest": "^4.1.5"
   },
   "dependencies": {
     "@types/cookie-parser": "^1.4.10",

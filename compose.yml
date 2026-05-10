@@ -13,6 +13,7 @@ services:
       UMBREL_HOST_PROXY_TARGET_TAILSCALE: ${UMBREL_HOST_PROXY_TARGET_TAILSCALE:-}
       UMBREL_HOST_BRIDGE_ENABLED: ${UMBREL_HOST_BRIDGE_ENABLED:-true}
       UMBREL_HOST_BRIDGE_IMAGE: ${UMBREL_HOST_BRIDGE_IMAGE:-}
+      UMBREL_TAILSCALE_PROXY_MODE: ${UMBREL_TAILSCALE_PROXY_MODE:-landing}
     volumes:
       - umbrel_data:/data
       - /var/run/docker.sock:/var/run/docker.sock

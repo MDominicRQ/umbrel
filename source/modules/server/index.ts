@@ -571,13 +571,9 @@ class Server {
 				if (networkMode === 'host' || networkMode.startsWith('service:') || networkMode.startsWith('container:')) {
 					this.#appKinds.set(appId, 'host-network')
 
-					// Check explicit override first
-					const overrideTarget = this.#getHostProxyOverride(appId)
-					if (overrideTarget) {
-						this.#cacheAppTarget(appId, overrideTarget)
-						this.logger.log(`Proxy target [host override] ${appId}: ${svc}→${overrideTarget}`)
-						return overrideTarget
-					}
+					// Do not accept UMBREL_HOST_PROXY_TARGET_* here without probing.
+					// The override was already probed before compose was read (lines 480-490).
+					// If unreachable, host-network apps must continue to gateway and bridge fallback.
 
 					const gatewayTarget = await this.#probeHostGateway(manifestPort)
 					if (gatewayTarget) {
@@ -804,6 +800,39 @@ class Server {
 		} catch {
 		}
 		return undefined
+	}
+
+	#getTailscaleProxyMode(): 'landing' | 'ui' {
+		const mode = process.env.UMBREL_TAILSCALE_PROXY_MODE?.trim().toLowerCase()
+		return mode === 'ui' ? 'ui' : 'landing'
+	}
+
+	#shouldServeTailscaleLanding(appId: string, appPath: string): boolean {
+		return appId === 'tailscale' && appPath === '/' && this.#getTailscaleProxyMode() === 'landing'
+	}
+
+	#renderTailscaleLandingPage(): string {
+		return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Tailscale</title></head>
+<body style="font-family:system-ui;max-width:760px;margin:60px auto;padding:0 20px;line-height:1.5">
+  <h1>Tailscale</h1>
+  <p>Umbrel is running on a VPS. Tailscale is managed from the cloud admin console, not a local web UI.</p>
+
+  <h2>Access Tailscale Admin Console</h2>
+  <ul>
+    <li><a href="https://login.tailscale.com/admin/machines">Open Tailscale Admin Console (login.tailscale.com)</a></li>
+  </ul>
+
+  <h2>Check Tailscale Status</h2>
+  <p>Run these commands on your VPS host to check Tailscale status:</p>
+  <pre>docker logs tailscale_web_1
+docker exec tailscale_web_1 tailscale status</pre>
+
+  <h2>Why This Page</h2>
+  <p>Tailscale uses Docker host networking. On a VPS, the local web UI may not be reachable or may require same-network access. This landing page is shown instead of a proxy error.</p>
+  <p>To attempt proxying the local UI instead, set <code>UMBREL_TAILSCALE_PROXY_MODE=ui</code> in your compose environment.</p>
+</body></html>`
 	}
 
 	async #getDockerGatewayCandidates(port: number): Promise<string[]> {
@@ -1738,6 +1767,12 @@ lightning:10009
 
 
 
+			// Tailscale VPS-first: serve landing page instead of proxying local UI
+			if (this.#shouldServeTailscaleLanding(appId, appPath)) {
+				response.set('Content-Type', 'text/html; charset=utf-8')
+				return response.send(this.#renderTailscaleLandingPage())
+			}
+
 			try {
 
 				const target = await this.#resolveAppTarget(appId)
@@ -1787,9 +1822,14 @@ lightning:10009
 					const probeList = error.probeTargets.map((t) => `<li><code>${t}</code></li>`).join('')
 					let nextChecks = ''
 					if (error.appId === 'home-assistant') {
+						const currentOverride = this.#getHostProxyOverride(error.appId)
+						const bridgePort = this.#getHostBridgePort(error.appId, error.port)
 						nextChecks = `
+    <li>Current override: <code>${currentOverride || 'none'}</code></li>
     <li>Confirm the app is listening on the host port <code>${error.port}</code>.</li>
     <li>Confirm it binds to <code>0.0.0.0</code> (not <code>127.0.0.1</code>).</li>
+    <li>If the override points to <code>host.docker.internal</code> and probes fail, remove it so Umbrel can try gateway/bridge fallback.</li>
+    <li>Expected bridge target: <code>http://10.21.0.1:${bridgePort}</code></li>
     <li>In <code>configuration.yaml</code>, configure:</li>
     <ul>
       <li><code>http:</code></li>
@@ -1798,7 +1838,6 @@ lightning:10009
       <li><code>    - 10.21.0.0/16</code></li>
       <li><code>    - 172.16.0.0/12</code></li>
     </ul>
-    <li>Set the env var: <code>UMBREL_HOST_PROXY_TARGET_HOME_ASSISTANT=http://host.docker.internal:8123</code></li>
   `
 					} else if (error.appId === 'tailscale') {
 						return response.send(`<!DOCTYPE html>
@@ -1956,7 +1995,7 @@ docker exec tailscale_web_1 tailscale status</pre>
 
 			const appId = getRootAbsoluteProxyAppId(pathname, refererBasedAppId, cookieBasedAppId, recentAppId)
 			if (!appId) {
-				this.logger.log(`root-absolute proxy: ${pathname} could not be resolved (no referer/cookie/recent), falling through`)
+				this.logger.verbose(`root-absolute proxy: ${pathname} could not be resolved (no referer/cookie/recent), falling through`)
 				return next()
 			}
 			if (!this.#isInstalledApp(appId)) return next()
