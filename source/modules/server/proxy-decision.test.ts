@@ -5,6 +5,7 @@ import {
 	isImmutableChunkPath,
 	isUmbrelReservedRootPath,
 	getProxyMountMode,
+	getRootAbsoluteProxyDecision,
 } from './index.js'
 
 describe('isRefererRequiredRootPath', () => {
@@ -298,5 +299,67 @@ describe('getProxyMountMode', () => {
 	})
 	it('returns prefix for unknown app', () => {
 		expect(getProxyMountMode('some-new-app')).toBe('prefix')
+	})
+})
+
+describe('root-absolute proxy context arbitration', () => {
+	it('explicit referer context wins over stale Affine wildcard for Open WebUI immutable chunks', () => {
+		const result = getRootAbsoluteProxyDecision(
+			'/_app/immutable/entry/start.js',
+			'open-webui',
+			'affine',
+			'affine',
+			undefined,
+			'affine',
+		)
+		expect(result).toBe('open-webui')
+	})
+
+	it('ambiguous static assets use referer before stale Affine wildcard', () => {
+		const result = getRootAbsoluteProxyDecision(
+			'/static/logo.png',
+			'open-webui',
+			'affine',
+			'affine',
+			undefined,
+			'affine',
+		)
+		expect(result).toBe('open-webui')
+	})
+
+	it('ambiguous static assets without referer can fall back to active root wildcard', () => {
+		const result = getRootAbsoluteProxyDecision(
+			'/static/logo.png',
+			undefined,
+			'affine',
+			'affine',
+			undefined,
+			'affine',
+		)
+		expect(result).toBe('affine')
+	})
+
+	it('non-ambiguous API paths use recent prefix app context before stale Affine wildcard', () => {
+		const result = getRootAbsoluteProxyDecision(
+			'/api/config',
+			undefined,
+			undefined,
+			'open-webui',
+			undefined,
+			'affine',
+		)
+		expect(result).toBe('open-webui')
+	})
+
+	it('specific active root route wins over explicit context', () => {
+		const result = getRootAbsoluteProxyDecision(
+			'/manifest.json',
+			'open-webui',
+			'open-webui',
+			'open-webui',
+			'affine',
+			undefined,
+		)
+		expect(result).toBe('affine')
 	})
 })

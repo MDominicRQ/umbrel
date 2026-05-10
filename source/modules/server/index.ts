@@ -312,6 +312,19 @@ export function getRootAbsoluteProxyAppId(
 	return refererAppId ?? cookieAppId ?? recentAppId
 }
 
+export function getRootAbsoluteProxyDecision(
+	pathname: string,
+	refererAppId: string | undefined,
+	cookieAppId: string | undefined,
+	recentAppId: string | undefined,
+	activeRootAppId: string | undefined,
+	wildcardRootAppId: string | undefined,
+): string | undefined {
+	return activeRootAppId
+		?? getRootAbsoluteProxyAppId(pathname, refererAppId, cookieAppId, recentAppId)
+		?? wildcardRootAppId
+}
+
 class Server {
 
 	umbreld: Umbreld
@@ -973,6 +986,15 @@ class Server {
 			return undefined
 		}
 		return entry.appId
+	}
+
+	#clearActiveRootContext(request: http.IncomingMessage) {
+		const key = this.#getProxyClientKey(request)
+		if (this.#activeRootApps.has(key)) {
+			this.#activeRootApps.delete(key)
+			this.logger.log(`[proxy] active-root context cleared for client (entering prefix app)`)
+		}
+		this.#activeRootRoutes.delete(key)
 	}
 
 
@@ -1990,6 +2012,9 @@ lightning:10009
 				// Register wildcard active root app for root-active apps
 				if (mountMode === 'root-active') {
 					this.#rememberActiveRootApp(request, appId)
+				} else {
+					// Entering a prefix app clears any previous root-active context
+					this.#clearActiveRootContext(request)
 				}
 
 				this.#getAppProxy(appId, target, {rewriteLocation: true, mountMode})(request, response, next)
@@ -2171,6 +2196,12 @@ docker exec tailscale_web_1 tailscale status</pre>
 			// Never steal Umbrel's own routes
 			if (isUmbrelReservedRootPath(pathname)) return next()
 
+			// Root-absolute paths (/_app, /static, /manifest.json, etc.) are handled
+			// by the root-absolute proxy below, which has proper context arbitration
+			// (specific active route > explicit context > wildcard).
+			// This prevents a root-active app from stealing assets from prefix apps.
+			if (isRootAbsoluteAppPath(pathname)) return next()
+
 			// Find active root app: first by specific route, then by wildcard
 			const activeAppId = this.#getActiveRootRouteApp(request, pathname)
 				?? this.#getActiveRootApp(request)
@@ -2204,7 +2235,17 @@ docker exec tailscale_web_1 tailscale status</pre>
 			const activeRootAppId = this.#getActiveRootRouteApp(request, pathname)
 			const wildcardAppId = this.#getActiveRootApp(request)
 
-			const appId = activeRootAppId ?? wildcardAppId ?? getRootAbsoluteProxyAppId(pathname, refererBasedAppId, cookieBasedAppId, recentAppId)
+			// Resolution order: active-root route > explicit context > wildcard
+			// Explicit context always wins over wildcard to prevent a root-active
+			// app from stealing assets from prefix apps.
+			const appId = getRootAbsoluteProxyDecision(
+				pathname,
+				refererBasedAppId,
+				cookieBasedAppId,
+				recentAppId,
+				activeRootAppId,
+				wildcardAppId,
+			)
 			if (!appId) {
 				this.logger.verbose(`root-absolute proxy: ${pathname} could not be resolved (no referer/cookie/recent/active), falling through`)
 				return next()
@@ -2357,34 +2398,31 @@ docker exec tailscale_web_1 tailscale status</pre>
 				// Proxies to the correct app when browser connects to root path
 				if (isRootAbsoluteAppPath(pathname) && !isUmbrelOwnedPath(pathname) && !isUmbrelReservedRootPath(pathname)) {
 					const upgradeReq = request as any
-					// Try active root route first, then wildcard
-					const activeAppId = this.#getActiveRootRouteApp(request as any, pathname)
-						?? this.#getActiveRootApp(request as any)
-					if (activeAppId) {
+					const refererBasedAppId = getAppIdFromReferer(request as any)
+					const cookieMatch = upgradeReq.headers?.cookie?.match(/umbrel_proxy_app=([a-z0-9][a-z0-9-]*)/)
+					const cookieBasedAppId = cookieMatch?.[1]
+					const recentAppId = this.#getRecentProxyApp(request as any)
+					const activeRootAppId = this.#getActiveRootRouteApp(request as any, pathname)
+					const wildcardAppId = this.#getActiveRootApp(request as any)
+					const appId = getRootAbsoluteProxyDecision(
+						pathname,
+						refererBasedAppId,
+						cookieBasedAppId,
+						recentAppId,
+						activeRootAppId,
+						wildcardAppId,
+					)
+					if (appId) {
 						try {
-							const target = await this.#resolveAppTarget(activeAppId)
-							const proxy = this.#getAppProxy(activeAppId, target, {rewriteLocation: true, mountMode: 'root-active'})
-							this.logger.log(`[${activeAppId}] root-active wsUpgrade: ${pathname}${rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : ''} → ${target}${pathname}`)
+							const target = await this.#resolveAppTarget(appId)
+							const mountMode = getProxyMountMode(appId)
+							const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true, mountMode})
+							const via = activeRootAppId === appId ? 'active-root' : refererBasedAppId === appId ? 'Referer' : cookieBasedAppId === appId ? 'cookie' : recentAppId === appId ? 'recent' : 'wildcard'
+							this.logger.log(`[${appId}] root-absolute wsUpgrade: ${pathname}${rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : ''} → ${target}${pathname} (via ${via})`)
 							;(proxy as any).upgrade(request, socket, head)
 							return
 						} catch (err) {
-							this.logger.error(`[${activeAppId}] root-active wsUpgrade failed: ${(err as Error).message}`)
-						}
-					}
-					// Fallback to cookie-based app
-					if (upgradeReq.headers?.cookie) {
-						const cookieMatch = upgradeReq.headers.cookie.match(/umbrel_proxy_app=([a-z0-9][a-z0-9-]*)/)
-						if (cookieMatch) {
-							const appId = cookieMatch[1]
-							try {
-								const target = await this.#resolveAppTarget(appId)
-								const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true})
-								this.logger.log(`[${appId}] root-absolute wsUpgrade: ${pathname}${rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : ''} → ${target}${pathname}`)
-								;(proxy as any).upgrade(request, socket, head)
-								return
-							} catch (err) {
-								this.logger.error(`[${appId}] root-absolute wsUpgrade failed: ${(err as Error).message}`)
-							}
+							this.logger.error(`[${appId}] root-absolute wsUpgrade failed: ${(err as Error).message}`)
 						}
 					}
 				}
