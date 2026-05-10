@@ -62,4 +62,27 @@ describe('rewriteContent', () => {
 			expect(result).toBe('<script type="module">import `/proxy/open-webui/_app/immutable/chunks/foo.js`</script>')
 		})
 	})
+
+	describe('root-active mode (no prefix rewriting)', () => {
+		it('does not rewrite href /admin/js/foo.js', () => {
+			const body = '<a href="/admin/js/foo.js">'
+			const result = rewriteContent(body, '/proxy/affine', 'root-active')
+			expect(result).toBe('<a href="/admin/js/foo.js">')
+		})
+		it('does not rewrite src /assets/foo.js', () => {
+			const body = '<img src="/assets/foo.js">'
+			const result = rewriteContent(body, '/proxy/affine', 'root-active')
+			expect(result).toBe('<img src="/assets/foo.js">')
+		})
+		it('does not rewrite import "/_app/..." in module script', () => {
+			const body = '<script type="module">import "/_app/immutable/chunks/foo.js"</script>'
+			const result = rewriteContent(body, '/proxy/open-webui', 'root-active')
+			expect(result).toBe('<script type="module">import "/_app/immutable/chunks/foo.js"</script>')
+		})
+		it('does not rewrite url() in CSS', () => {
+			const body = '<style>body { background: url("/images/bg.png") }</style>'
+			const result = rewriteContent(body, '/proxy/affine', 'root-active')
+			expect(result).toBe('<style>body { background: url("/images/bg.png") }</style>')
+		})
+	})
 })

@@ -112,8 +112,22 @@ const wrapHandlersWithAsyncHandler = (router: express.Router) => {
 
 }
 
-function rewriteRedirectLocation(loc: string | undefined, prefix: string): string | undefined {
+function rewriteRedirectLocation(loc: string | undefined, prefix: string, mountMode: ProxyMountMode = 'prefix'): string | undefined {
 	if (typeof loc !== 'string') return loc
+	// In root-active mode, leave root-absolute locations as-is (app lives at /)
+	if (mountMode === 'root-active') {
+		if (loc.startsWith('/') && !loc.startsWith('//')) return loc
+		if (/^https?:\/\//i.test(loc)) {
+			try {
+				const u = new URL(loc)
+				return `${u.pathname}${u.search}${u.hash}`
+			} catch {
+				return loc
+			}
+		}
+		return loc
+	}
+	// Prefix mode: rewrite to /proxy/<appId>/...
 	if (loc.startsWith('/') && !loc.startsWith('//') && !loc.startsWith(`${prefix}/`) && loc !== prefix) {
 		return `${prefix}${loc}`
 	}
@@ -141,7 +155,9 @@ function buildInjectScript(prefix: string): string {
 	return `<script>(function(){var p=${p};var o=${org};var h=${h};${rw};${rwws};var oF=window.fetch;window.fetch=function(u,i){if(u&&u instanceof Request){var r=new Request(rw(u.url),u);if(i)return oF.call(this,r,i);return oF.call(this,r);}return oF.call(this,rw(u),i);};var oX=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var a=Array.from(arguments);a[1]=rw(a[1]);return oX.apply(this,a);};var oW=window.WebSocket;window.WebSocket=function(u,q){var s=u&&u.href?String(u.href):(u&&u.url?String(u.url):rw(u));return q?new oW(rwws(s),q):new oW(rwws(s));};Object.assign(window.WebSocket,oW);window.WebSocket.prototype=oW.prototype;var oES=window.EventSource;window.EventSource=function(u,q){return new oES(rw(u),q);};EventSource.prototype=oES.prototype;var oWkr=window.Worker;window.Worker=function(u,c){return new oWkr(rw(u),c);};var oSW=window.SharedWorker;window.SharedWorker=function(u,c){return new oSW(rw(u),c);};if(navigator.serviceWorker){var oSWR=navigator.serviceWorker.register.bind(navigator.serviceWorker);navigator.serviceWorker.register=function(u,opts){return oSWR(rw(u),opts);};}var oPS=history.pushState.bind(history);history.pushState=function(s,t,u){return oPS(s,t,u!=null?rw(u):u);};var oRS=history.replaceState.bind(history);history.replaceState=function(s,t,u){return oRS(s,t,u!=null?rw(u):u);};var oLR=location.replace.bind(location);location.replace=function(u){return oLR(rw(u));};var oLA=location.assign.bind(location);location.assign=function(u){return oLA(rw(u));};try{var lhd=Object.getOwnPropertyDescriptor(Location.prototype,'href');if(lhd)Object.defineProperty(Location.prototype,'href',{get:lhd.get,set:function(u){lhd.set.call(this,rw(String(u)));},configurable:true});}catch(e){}})();</script>`
 }
 
-export function rewriteContent(body: string, prefix: string): string {
+export function rewriteContent(body: string, prefix: string, mountMode: ProxyMountMode = 'prefix'): string {
+	// In root-active mode, the app lives at / — no prefix rewriting needed
+	if (mountMode === 'root-active') return body
 	body = body.replace(/((?:href|src|action|poster|data-src|data-href)=["'])\/(?!\/|proxy\/)/g, `$1${prefix}/`)
 	body = body.replace(/(\burl\(["']?)\/(?!\/|proxy\/)/g, `$1${prefix}/`)
 	const scriptModulePattern = /(<script[^>]*type=["']module["'][^>]*>)([\s\S]*?)<\/script>/gi
@@ -155,7 +171,9 @@ export function rewriteContent(body: string, prefix: string): string {
 	return body
 }
 
-function rewriteJsContent(body: string, prefix: string): string {
+function rewriteJsContent(body: string, prefix: string, mountMode: ProxyMountMode = 'prefix'): string {
+	// In root-active mode, the app lives at / — no prefix rewriting needed
+	if (mountMode === 'root-active') return body
 	const rootAbsolutes = ['/_app', '/api', '/assets', '/static', '/manifest', '/favicon', '/robots', '/sw', '/service-worker', '/ws', '/socket.io', '/ollama', '/models', '/health', '/api/v1', '/nodes']
 	for (const base of rootAbsolutes) {
 		body = body.replace(new RegExp(`"(https?://[^"]*)?${base}([^"]*)"`, 'g'), (match, protocol, rest) => {
@@ -223,7 +241,30 @@ const ROOT_ABSOLUTE_PATTERNS = [
 	/^\/nodes\//, /^\/nodes$/,
 ]
 
+type ProxyMountMode = 'prefix' | 'root-active'
+
+interface ActiveRootRoute {
+	appId: string
+	basePath: string
+	expiresAt: number
+}
+
 const UMBREL_OWNED_PATHS = ['/trpc', '/manager-api', '/api/files', '/api/debug']
+
+export function isUmbrelReservedRootPath(pathname: string): boolean {
+	if (pathname === '/') return true
+	const reserved = [
+		'/trpc', '/manager-api', '/api/files', '/api/debug',
+		'/app-store', '/settings', '/widgets', '/wallpaper',
+		'/login', '/logout', '/locales',
+	]
+	for (const r of reserved) {
+		if (pathname === r || pathname.startsWith(r + '/')) return true
+	}
+	// Dashboard assets only go to apps when there is a strong app context
+	if (pathname.startsWith('/assets/')) return true
+	return false
+}
 
 function isRootAbsoluteAppPath(pathname: string): boolean {
 	for (const pattern of ROOT_ABSOLUTE_PATTERNS) {
@@ -277,6 +318,8 @@ class Server {
 	#appProxyContainerCache = new Map<string, string>()
 
 	#recentProxyApps = new Map<string, {appId: string; expiresAt: number}>()
+
+	#activeRootRoutes = new Map<string, ActiveRootRoute[]>()
 
 	#isInstalledApp(appId: string): boolean {
 		return this.umbreld.apps.instances.some((app) => app.id === appId)
@@ -555,10 +598,11 @@ class Server {
 
 
 
-			// ── Strategy 2: host network mode ───────────────────────────────────────
+			// ── Strategy 2: network mode handling ───────────────────────────────────
 			// For apps with network_mode: host, we cannot reach them via Docker DNS.
-			// On a VPS, the container and host share the same network namespace when using host-mode.
-			// Try: (1) explicit override env var, (2) Docker gateway probes, (3) error with diagnostic page.
+			// For network_mode: service:X, resolve service X's container.
+			// For network_mode: container:X, inspect container X directly.
+			// On a VPS, host containers share the same network namespace.
 
 			const services = Object.keys(compose.services ?? {})
 
@@ -568,7 +612,7 @@ class Server {
 
 				const networkMode: string = ((compose.services as any)[svc] ?? {})['network_mode'] ?? ''
 
-				if (networkMode === 'host' || networkMode.startsWith('service:') || networkMode.startsWith('container:')) {
+				if (networkMode === 'host') {
 					this.#appKinds.set(appId, 'host-network')
 
 					// Do not accept UMBREL_HOST_PROXY_TARGET_* here without probing.
@@ -591,6 +635,65 @@ class Server {
 
 					const probeTargets = await this.#getDockerGatewayCandidates(manifestPort)
 					throw new HostNetworkTargetUnavailableError(appId, manifestPort, probeTargets)
+				}
+
+				if (networkMode.startsWith('service:')) {
+					// Resolve the referenced service's container
+					const refService = networkMode.slice('service:'.length)
+					const refContainerName = `${appId}_${refService}_1`
+					try {
+						const container = this.#docker.getContainer(refContainerName)
+						const info = await container.inspect()
+						const ip = (info.NetworkSettings.Networks as any)?.['umbrel_main_network']?.IPAddress
+						if (ip) {
+							const target = `http://${ip}:${manifestPort}`
+							this.#cacheAppTarget(appId, target)
+							this.logger.log(`Proxy target [service-ref] ${appId}: ${svc}→${refService} (${target})`)
+							return target
+						}
+					} catch {
+						this.logger.log(`Proxy target [service-ref] ${appId}: could not inspect ${refContainerName}`)
+					}
+					// Fall through to heuristic strategies
+				}
+
+				if (networkMode.startsWith('container:')) {
+					// Inspect the referenced container directly
+					const refContainer = networkMode.slice('container:'.length)
+					try {
+						const container = this.#docker.getContainer(refContainer)
+						const info = await container.inspect()
+						const refNetworkMode = info.HostConfig?.NetworkMode ?? ''
+						// If the referenced container uses host networking, use host resolver
+						if (refNetworkMode === 'host') {
+							this.#appKinds.set(appId, 'host-network')
+							const gatewayTarget = await this.#probeHostGateway(manifestPort)
+							if (gatewayTarget) {
+								this.#cacheAppTarget(appId, gatewayTarget)
+								this.logger.log(`Proxy target [container-ref host] ${appId}: ${svc}→${refContainer} (${gatewayTarget})`)
+								return gatewayTarget
+							}
+							const bridgeTarget = await this.#ensureHostLoopbackBridge(appId, manifestPort)
+							if (bridgeTarget) {
+								this.#cacheAppTarget(appId, bridgeTarget)
+								this.logger.log(`Proxy target [container-ref bridge] ${appId}: ${svc}→${refContainer} (${bridgeTarget})`)
+								return bridgeTarget
+							}
+							const probeTargets = await this.#getDockerGatewayCandidates(manifestPort)
+							throw new HostNetworkTargetUnavailableError(appId, manifestPort, probeTargets)
+						}
+						// Otherwise, use the container's Docker network IP
+						const ip = (info.NetworkSettings.Networks as any)?.['umbrel_main_network']?.IPAddress
+						if (ip) {
+							const target = `http://${ip}:${manifestPort}`
+							this.#cacheAppTarget(appId, target)
+							this.logger.log(`Proxy target [container-ref] ${appId}: ${svc}→${refContainer} (${target})`)
+							return target
+						}
+					} catch {
+						this.logger.log(`Proxy target [container-ref] ${appId}: could not inspect ${refContainer}`)
+					}
+					// Fall through to heuristic strategies
 				}
 
 			}
@@ -789,6 +892,46 @@ class Server {
 		return entry.appId
 	}
 
+	#rememberRootRouteApp(request: http.IncomingMessage, appId: string, pathname: string) {
+		const key = this.#getProxyClientKey(request)
+		const now = Date.now()
+		const routes = this.#activeRootRoutes.get(key) ?? []
+		// Derive a safe base path: /admin/setup => /admin, /api/websocket => /api
+		const segments = pathname.split('/').filter(Boolean)
+		const basePath = segments.length > 0 ? `/${segments[0]}` : pathname
+		// Don't store if it's a reserved path
+		if (isUmbrelReservedRootPath(basePath)) return
+		// Update or add
+		const existing = routes.find(r => r.appId === appId && r.basePath === basePath)
+		if (existing) {
+			existing.expiresAt = now + 60 * 60 * 1000
+		} else {
+			routes.push({appId, basePath, expiresAt: now + 60 * 60 * 1000})
+		}
+		// Clean expired
+		const active = routes.filter(r => r.expiresAt > now)
+		this.#activeRootRoutes.set(key, active)
+	}
+
+	#getActiveRootRouteApp(request: http.IncomingMessage, pathname: string): string | undefined {
+		const key = this.#getProxyClientKey(request)
+		const now = Date.now()
+		const routes = this.#activeRootRoutes.get(key)
+		if (!routes || routes.length === 0) return undefined
+		// Find the longest matching base path
+		let best: {appId: string; basePath: string} | undefined
+		for (const r of routes) {
+			if (r.expiresAt <= now) continue
+			if (!this.#isInstalledApp(r.appId)) continue
+			if (pathname === r.basePath || pathname.startsWith(r.basePath + '/')) {
+				if (!best || r.basePath.length > best.basePath.length) {
+					best = r
+				}
+			}
+		}
+		return best?.appId
+	}
+
 
 	#getHostProxyOverride(appId: string): string | undefined {
 		const key = `UMBREL_HOST_PROXY_TARGET_${appId.toUpperCase().replace(/-/g, '_')}`
@@ -800,39 +943,6 @@ class Server {
 		} catch {
 		}
 		return undefined
-	}
-
-	#getTailscaleProxyMode(): 'landing' | 'ui' {
-		const mode = process.env.UMBREL_TAILSCALE_PROXY_MODE?.trim().toLowerCase()
-		return mode === 'ui' ? 'ui' : 'landing'
-	}
-
-	#shouldServeTailscaleLanding(appId: string, appPath: string): boolean {
-		return appId === 'tailscale' && appPath === '/' && this.#getTailscaleProxyMode() === 'landing'
-	}
-
-	#renderTailscaleLandingPage(): string {
-		return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Tailscale</title></head>
-<body style="font-family:system-ui;max-width:760px;margin:60px auto;padding:0 20px;line-height:1.5">
-  <h1>Tailscale</h1>
-  <p>Umbrel is running on a VPS. Tailscale is managed from the cloud admin console, not a local web UI.</p>
-
-  <h2>Access Tailscale Admin Console</h2>
-  <ul>
-    <li><a href="https://login.tailscale.com/admin/machines">Open Tailscale Admin Console (login.tailscale.com)</a></li>
-  </ul>
-
-  <h2>Check Tailscale Status</h2>
-  <p>Run these commands on your VPS host to check Tailscale status:</p>
-  <pre>docker logs tailscale_web_1
-docker exec tailscale_web_1 tailscale status</pre>
-
-  <h2>Why This Page</h2>
-  <p>Tailscale uses Docker host networking. On a VPS, the local web UI may not be reachable or may require same-network access. This landing page is shown instead of a proxy error.</p>
-  <p>To attempt proxying the local UI instead, set <code>UMBREL_TAILSCALE_PROXY_MODE=ui</code> in your compose environment.</p>
-</body></html>`
 	}
 
 	async #getDockerGatewayCandidates(port: number): Promise<string[]> {
@@ -916,17 +1026,25 @@ docker exec tailscale_web_1 tailscale status</pre>
 	}
 
 	async #getDockerGatewayBindAddresses(): Promise<string[]> {
-		const addresses = new Set<string>()
+		const addresses: string[] = []
+		const seen = new Set<string>()
+		// Always try 10.21.0.1 first (umbrel_main_network gateway)
+		addresses.push('10.21.0.1')
+		seen.add('10.21.0.1')
 		try {
 			const self = await this.#docker.getContainer(process.env.HOSTNAME ?? '').inspect()
 			for (const network of Object.values(self.NetworkSettings?.Networks ?? {}) as any[]) {
-				if (network?.Gateway) addresses.add(network.Gateway)
+				if (network?.Gateway && !seen.has(network.Gateway)) {
+					addresses.push(network.Gateway)
+					seen.add(network.Gateway)
+				}
 			}
 		} catch {
 		}
-		addresses.add('10.21.0.1')
-		addresses.add('172.17.0.1')
-		return [...addresses]
+		if (!seen.has('172.17.0.1')) {
+			addresses.push('172.17.0.1')
+		}
+		return addresses
 	}
 
 	async #getSelfImage(): Promise<string> {
@@ -948,10 +1066,10 @@ docker exec tailscale_web_1 tailscale status</pre>
 		}
 
 		const bridgePort = this.#getHostBridgePort(appId, targetPort)
-		const containerName = this.#getHostBridgeContainerName(appId)
 		const image = await this.#getSelfImage()
 		const bindAddresses = await this.#getDockerGatewayBindAddresses()
 
+		// Check if any existing bridge is reachable
 		for (const bindAddress of bindAddresses) {
 			const target = `http://${bindAddress}:${bridgePort}`
 			if (await this.#probeTcp(target)) {
@@ -961,50 +1079,53 @@ docker exec tailscale_web_1 tailscale status</pre>
 			}
 		}
 
-		try {
-			await this.#docker.getContainer(containerName).remove({force: true}).catch(() => undefined)
+		// Try each bind address, creating a bridge container for each
+		for (const bindAddress of bindAddresses) {
+			const containerName = `umbrel-host-bridge-${appId}-${bindAddress.replace(/\./g, '-')}`
+			try {
+				await this.#docker.getContainer(containerName).remove({force: true}).catch(() => undefined)
 
-			const bindAddress = bindAddresses[0]
-			if (!bindAddress) return undefined
+				const container = await this.#docker.createContainer({
+					Image: image,
+					name: containerName,
+					Entrypoint: ['socat'],
+					Cmd: [
+						'-d', '-d',
+						`TCP-LISTEN:${bridgePort},bind=${bindAddress},fork,reuseaddr`,
+						`TCP:127.0.0.1:${targetPort}`,
+					],
+					Labels: {
+						'umbrel.host-bridge': 'true',
+						'umbrel.host-bridge.app': appId,
+					},
+					HostConfig: {
+						NetworkMode: 'host',
+						RestartPolicy: {Name: 'unless-stopped'},
+					},
+				})
 
-			const container = await this.#docker.createContainer({
-				Image: image,
-				name: containerName,
-				Entrypoint: ['socat'],
-				Cmd: [
-					'-d', '-d',
-					`TCP-LISTEN:${bridgePort},bind=${bindAddress},fork,reuseaddr`,
-					`TCP:127.0.0.1:${targetPort}`,
-				],
-				Labels: {
-					'umbrel.host-bridge': 'true',
-					'umbrel.host-bridge.app': appId,
-				},
-				HostConfig: {
-					NetworkMode: 'host',
-					RestartPolicy: {Name: 'unless-stopped'},
-				},
-			})
+				await container.start()
 
-			await container.start()
+				const target = `http://${bindAddress}:${bridgePort}`
 
-			const target = `http://${bindAddress}:${bridgePort}`
-
-			for (let attempt = 0; attempt < 10; attempt++) {
-				if (await this.#probeTcp(target)) {
-					this.logger.log(`Proxy target [host bridge] ${appId}: ${target} → 127.0.0.1:${targetPort}`)
-					this.#hostBridgeCache.set(appId, {target, expiresAt: Date.now() + 60_000})
-					return target
+				for (let attempt = 0; attempt < 10; attempt++) {
+					if (await this.#probeTcp(target)) {
+						this.logger.log(`Proxy target [host bridge] ${appId}: bind=${bindAddress} ${target} → 127.0.0.1:${targetPort}`)
+						this.#hostBridgeCache.set(appId, {target, expiresAt: Date.now() + 60_000})
+						return target
+					}
+					await new Promise((resolve) => setTimeout(resolve, 300))
 				}
-				await new Promise((resolve) => setTimeout(resolve, 300))
-			}
 
-			this.logger.log(`Proxy target [host bridge] ${appId}: bridge started but ${target} is not reachable`)
-			return undefined
-		} catch (error) {
-			this.logger.log(`Proxy target [host bridge] ${appId}: failed — ${(error as Error).message}`)
-			return undefined
+				this.logger.log(`Proxy target [host bridge] ${appId}: bind=${bindAddress} ${target} is not reachable, trying next`)
+				await this.#docker.getContainer(containerName).remove({force: true}).catch(() => undefined)
+			} catch (error) {
+				this.logger.log(`Proxy target [host bridge] ${appId}: bind=${bindAddress} failed — ${(error as Error).message}`)
+			}
 		}
+
+		this.logger.log(`Proxy target [host bridge] ${appId}: all bind addresses failed`)
+		return undefined
 	}
 
 	// Run Nextcloud occ commands to configure trusted domains and reverse proxy headers.
@@ -1059,14 +1180,18 @@ docker exec tailscale_web_1 tailscale status</pre>
 
 	// rewriteLocation: false → subdomain proxy: plain pass-through.
 
-	#getAppProxy(appId: string, target: string, {rewriteLocation = false} = {}) {
-		const cacheKey = `${appId}|${target}|${rewriteLocation}`
+	// mountMode: 'prefix'    → standard /proxy/:appId prefix (default)
+
+	// mountMode: 'root-active' → app lives at /, no prefix rewriting
+
+	#getAppProxy(appId: string, target: string, {rewriteLocation = false, mountMode = 'prefix' as ProxyMountMode} = {}) {
+		const cacheKey = `${appId}|${target}|${rewriteLocation}|${mountMode}`
 		if (this.#appProxyCache.has(cacheKey)) {
 			return this.#appProxyCache.get(cacheKey)!
 		}
 
 		const prefix = `/proxy/${appId}`
-		const injectScript = buildInjectScript(prefix)
+		const injectScript = mountMode === 'prefix' ? buildInjectScript(prefix) : ''
 
 		const proxyOptions: Parameters<typeof createProxyMiddleware>[0] = {
 			target,
@@ -1074,13 +1199,15 @@ docker exec tailscale_web_1 tailscale status</pre>
 			proxyTimeout: 30000,
 			timeout: 30000,
 			ws: false,
-			cookiePathRewrite: {'/': prefix},
+			cookiePathRewrite: mountMode === 'prefix' ? {'/': prefix} : undefined,
 			cookieDomainRewrite: {'*': ''},
-			pathRewrite: (path: string): string => {
-				if (path === prefix) return '/'
-				if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length)
-				return path
-			},
+			pathRewrite: mountMode === 'prefix'
+				? (path: string): string => {
+					if (path === prefix) return '/'
+					if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length)
+					return path
+				}
+				: undefined,
 			onError: (err: Error, _req: http.IncomingMessage, res: http.ServerResponse | any) => {
 				this.logger.error(`[${appId}] proxy error (${target}): ${(err as Error).message}`)
 				if ((res as http.ServerResponse).headersSent) return
@@ -1125,9 +1252,14 @@ docker exec tailscale_web_1 tailscale status</pre>
 				}
 
 				const inPath = req.url ?? proxyReq.path ?? '/'
-				const outPath = inPath.startsWith(`${prefix}/`)
-					? inPath.slice(prefix.length)
-					: (inPath === prefix ? '/' : inPath)
+				let outPath: string
+				if (mountMode === 'root-active') {
+					outPath = inPath
+				} else {
+					outPath = inPath.startsWith(`${prefix}/`)
+						? inPath.slice(prefix.length)
+						: (inPath === prefix ? '/' : inPath)
+				}
 				proxyReq.path = outPath
 				this.logger.log(`[${appId}] proxyReq: ${inPath} → ${target}${outPath}`)
 			}
@@ -1158,7 +1290,11 @@ docker exec tailscale_web_1 tailscale status</pre>
 
 				const loc = proxyRes.headers.location
 				if (typeof loc === 'string') {
-					proxyRes.headers.location = rewriteRedirectLocation(loc, prefix) ?? loc
+					proxyRes.headers.location = rewriteRedirectLocation(loc, prefix, mountMode) ?? loc
+					// Record active root route for root-active mode
+					if (mountMode === 'root-active' && loc.startsWith('/') && !loc.startsWith('//')) {
+						this.#rememberRootRouteApp(_req as http.IncomingMessage, appId, loc)
+					}
 				}
 				const refresh = proxyRes.headers.refresh
 				if (typeof refresh === 'string' && refresh.includes('url=')) {
@@ -1166,7 +1302,9 @@ docker exec tailscale_web_1 tailscale status</pre>
 					if (m) {
 						const orig = m[1].trim().replace(/^["']|["']$/g, '')
 						let rewritten: string
-						if (orig.startsWith('/') && !orig.startsWith('//')) {
+						if (mountMode === 'root-active') {
+							rewritten = orig
+						} else if (orig.startsWith('/') && !orig.startsWith('//')) {
 							rewritten = `${prefix}${orig}`
 						} else {
 							try {
@@ -1223,16 +1361,18 @@ docker exec tailscale_web_1 tailscale status</pre>
 					res.setHeader('Set-Cookie', `umbrel_proxy_app=${appId}; Path=/; SameSite=Lax; Max-Age=3600`)
 
 					if (isHtml) {
-						if (/<head\b/i.test(body)) {
-							body = body.replace(/(<head\b[^>]*)(>)/i, `$1$2${injectScript}`, 1)
-						} else {
-							body = injectScript + body
+						if (injectScript) {
+							if (/<head\b/i.test(body)) {
+								body = body.replace(/(<head\b[^>]*)(>)/i, `$1$2${injectScript}`, 1)
+							} else {
+								body = injectScript + body
+							}
 						}
-						body = rewriteContent(body, prefix)
+						body = rewriteContent(body, prefix, mountMode)
 					}
 
 					if (isJs) {
-						body = rewriteJsContent(body, prefix)
+						body = rewriteJsContent(body, prefix, mountMode)
 					}
 
 					origWrite(Buffer.from(body, 'utf8'))
@@ -1767,12 +1907,6 @@ lightning:10009
 
 
 
-			// Tailscale VPS-first: serve landing page instead of proxying local UI
-			if (this.#shouldServeTailscaleLanding(appId, appPath)) {
-				response.set('Content-Type', 'text/html; charset=utf-8')
-				return response.send(this.#renderTailscaleLandingPage())
-			}
-
 			try {
 
 				const target = await this.#resolveAppTarget(appId)
@@ -1979,6 +2113,32 @@ docker exec tailscale_web_1 tailscale status</pre>
 
 		}
 
+		// Root-active app routing fallback
+		// When an app redirects from /proxy/<appId>/ to a root path like /admin/setup,
+		// this middleware proxies subsequent root requests to the active app.
+		this.app.use(async (request: express.Request, response: express.Response, next: express.NextFunction) => {
+			const urlObj = new URL(request.originalUrl, 'https://os.dominic.pw')
+			const pathname = urlObj.pathname
+			const search = urlObj.search
+
+			// Never steal Umbrel's own routes
+			if (isUmbrelReservedRootPath(pathname)) return next()
+
+			// Find active root app for this client
+			const activeAppId = this.#getActiveRootRouteApp(request, pathname)
+			if (!activeAppId) return next()
+
+			try {
+				const target = await this.#resolveAppTarget(activeAppId)
+				this.logger.log(`[${activeAppId}] root-active proxy: ${pathname}${search || ''} → ${target}${pathname}`)
+				request.url = `${pathname}${search || ''}`
+				this.#getAppProxy(activeAppId, target, {rewriteLocation: true, mountMode: 'root-active'})(request, response, next)
+			} catch (err) {
+				this.logger.error(`[${activeAppId}] root-active proxy failed: ${(err as Error).message}`)
+				next()
+			}
+		})
+
 		// Referer-based root-absolute SPA asset proxy
 		// Handles SPAs that emit /_app/, /api/, /assets/ etc — browser sends them to root domain
 		this.app.use(async (request: express.Request, response: express.Response, next: express.NextFunction) => {
@@ -1988,21 +2148,23 @@ docker exec tailscale_web_1 tailscale status</pre>
 
 			if (!isRootAbsoluteAppPath(pathname)) return next()
 			if (isUmbrelOwnedPath(pathname)) return next()
+			if (isUmbrelReservedRootPath(pathname)) return next()
 
 			const refererBasedAppId = getAppIdFromReferer(request)
 			const cookieBasedAppId = getProxyAppCookie(request)
 			const recentAppId = this.#getRecentProxyApp(request)
+			const activeRootAppId = this.#getActiveRootRouteApp(request, pathname)
 
-			const appId = getRootAbsoluteProxyAppId(pathname, refererBasedAppId, cookieBasedAppId, recentAppId)
+			const appId = activeRootAppId ?? getRootAbsoluteProxyAppId(pathname, refererBasedAppId, cookieBasedAppId, recentAppId)
 			if (!appId) {
-				this.logger.verbose(`root-absolute proxy: ${pathname} could not be resolved (no referer/cookie/recent), falling through`)
+				this.logger.verbose(`root-absolute proxy: ${pathname} could not be resolved (no referer/cookie/recent/active), falling through`)
 				return next()
 			}
 			if (!this.#isInstalledApp(appId)) return next()
 
 			try {
 				const target = await this.#resolveAppTarget(appId)
-				const via = refererBasedAppId ? 'Referer' : cookieBasedAppId ? 'cookie' : recentAppId ? 'recent' : 'none'
+				const via = activeRootAppId ? 'active-root' : refererBasedAppId ? 'Referer' : cookieBasedAppId ? 'cookie' : recentAppId ? 'recent' : 'none'
 				this.logger.log(`[${appId}] root-absolute proxy: ${pathname}${search || ''} (via ${via})`)
 				const proxy = this.#getAppProxy(appId, target, {rewriteLocation: true})
 				proxy(request, response, next)
@@ -2144,8 +2306,22 @@ docker exec tailscale_web_1 tailscale status</pre>
 
 				// Root-absolute WebSocket fallback (e.g. /api/terminal, /ws, /socket.io)
 				// Proxies to the correct app when browser connects to root path
-				if (isRootAbsoluteAppPath(pathname) && !isUmbrelOwnedPath(pathname)) {
+				if (isRootAbsoluteAppPath(pathname) && !isUmbrelOwnedPath(pathname) && !isUmbrelReservedRootPath(pathname)) {
 					const upgradeReq = request as any
+					// Try active root route first
+					const activeAppId = this.#getActiveRootRouteApp(request as any, pathname)
+					if (activeAppId) {
+						try {
+							const target = await this.#resolveAppTarget(activeAppId)
+							const proxy = this.#getAppProxy(activeAppId, target, {rewriteLocation: true, mountMode: 'root-active'})
+							this.logger.log(`[${activeAppId}] root-active wsUpgrade: ${pathname}${rawUrl.includes('?') ? rawUrl.slice(rawUrl.indexOf('?')) : ''} → ${target}${pathname}`)
+							;(proxy as any).upgrade(request, socket, head)
+							return
+						} catch (err) {
+							this.logger.error(`[${activeAppId}] root-active wsUpgrade failed: ${(err as Error).message}`)
+						}
+					}
+					// Fallback to cookie-based app
 					if (upgradeReq.headers?.cookie) {
 						const cookieMatch = upgradeReq.headers.cookie.match(/umbrel_proxy_app=([a-z0-9][a-z0-9-]*)/)
 						if (cookieMatch) {

@@ -3,6 +3,7 @@ import {
 	isRefererRequiredRootPath,
 	getRootAbsoluteProxyAppId,
 	isImmutableChunkPath,
+	isUmbrelReservedRootPath,
 } from './index.js'
 
 describe('isRefererRequiredRootPath', () => {
@@ -183,5 +184,88 @@ describe('isRefererRequiredRootPath — unchanged behavior', () => {
 	})
 	it('still returns true for /assets/foo.js', () => {
 		expect(isRefererRequiredRootPath('/assets/foo.js')).toBe(true)
+	})
+})
+
+describe('isUmbrelReservedRootPath', () => {
+	describe('should return true for Umbrel dashboard paths', () => {
+		it('/', () => {
+			expect(isUmbrelReservedRootPath('/')).toBe(true)
+		})
+		it('/trpc', () => {
+			expect(isUmbrelReservedRootPath('/trpc')).toBe(true)
+		})
+		it('/trpc/query', () => {
+			expect(isUmbrelReservedRootPath('/trpc/query')).toBe(true)
+		})
+		it('/manager-api', () => {
+			expect(isUmbrelReservedRootPath('/manager-api')).toBe(true)
+		})
+		it('/api/files', () => {
+			expect(isUmbrelReservedRootPath('/api/files')).toBe(true)
+		})
+		it('/api/debug', () => {
+			expect(isUmbrelReservedRootPath('/api/debug')).toBe(true)
+		})
+		it('/app-store', () => {
+			expect(isUmbrelReservedRootPath('/app-store')).toBe(true)
+		})
+		it('/settings', () => {
+			expect(isUmbrelReservedRootPath('/settings')).toBe(true)
+		})
+		it('/widgets', () => {
+			expect(isUmbrelReservedRootPath('/widgets')).toBe(true)
+		})
+		it('/wallpaper', () => {
+			expect(isUmbrelReservedRootPath('/wallpaper')).toBe(true)
+		})
+		it('/login', () => {
+			expect(isUmbrelReservedRootPath('/login')).toBe(true)
+		})
+		it('/logout', () => {
+			expect(isUmbrelReservedRootPath('/logout')).toBe(true)
+		})
+		it('/locales/en.json', () => {
+			expect(isUmbrelReservedRootPath('/locales/en.json')).toBe(true)
+		})
+		it('/assets/index.js', () => {
+			expect(isUmbrelReservedRootPath('/assets/index.js')).toBe(true)
+		})
+		it('/assets/', () => {
+			expect(isUmbrelReservedRootPath('/assets/')).toBe(true)
+		})
+	})
+
+	describe('should return false for app routes', () => {
+		it('/admin/setup', () => {
+			expect(isUmbrelReservedRootPath('/admin/setup')).toBe(false)
+		})
+		it('/admin/js/vendor.js', () => {
+			expect(isUmbrelReservedRootPath('/admin/js/vendor.js')).toBe(false)
+		})
+		it('/lovelace/default_view', () => {
+			expect(isUmbrelReservedRootPath('/lovelace/default_view')).toBe(false)
+		})
+		it('/api/websocket', () => {
+			expect(isUmbrelReservedRootPath('/api/websocket')).toBe(false)
+		})
+		it('/web/', () => {
+			expect(isUmbrelReservedRootPath('/web/')).toBe(false)
+		})
+		it('/manifest.json', () => {
+			expect(isUmbrelReservedRootPath('/manifest.json')).toBe(false)
+		})
+		it('/_app/immutable/chunks/foo.js', () => {
+			expect(isUmbrelReservedRootPath('/_app/immutable/chunks/foo.js')).toBe(false)
+		})
+		it('/nodes/1.js', () => {
+			expect(isUmbrelReservedRootPath('/nodes/1.js')).toBe(false)
+		})
+		it('/ws', () => {
+			expect(isUmbrelReservedRootPath('/ws')).toBe(false)
+		})
+		it('/socket.io/', () => {
+			expect(isUmbrelReservedRootPath('/socket.io/')).toBe(false)
+		})
 	})
 })
