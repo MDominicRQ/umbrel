@@ -216,6 +216,7 @@ export function isRefererRequiredRootPath(pathname: string): boolean {
 		/^\/nodes\//, /^\/nodes$/,
 		/^\/manifest\.json$/,
 		/^\/favicon\.ico$/, /^\/favicon\.png$/,
+		/^\/favicon-\d+\.png$/,
 		/^\/robots\.txt$/,
 		/^\/sw\.js$/, /^\/service-worker\.js$/,
 	].some((pattern) => pattern.test(pathname))
@@ -232,6 +233,7 @@ const ROOT_ABSOLUTE_PATTERNS = [
 	/^\/static\//, /^\/static$/,
 	/^\/manifest\.json$/,
 	/^\/favicon\.ico$/, /^\/favicon\.png$/,
+	/^\/favicon-\d+\.png$/,
 	/^\/robots\.txt$/,
 	/^\/sw\.js$/, /^\/service-worker\.js$/,
 	/^\/socket\.io\//,
@@ -239,9 +241,26 @@ const ROOT_ABSOLUTE_PATTERNS = [
 	/^\/ollama\//, /^\/ollama$/,
 	/^\/models\//, /^\/models$/,
 	/^\/nodes\//, /^\/nodes$/,
+	// Home Assistant common root paths
+	/^\/auth\//, /^\/auth$/,
+	/^\/frontend_latest\//, /^\/frontend_latest$/,
+	/^\/frontend_es5\//, /^\/frontend_es5$/,
+	/^\/lovelace\//, /^\/lovelace$/,
+	/^\/config\//, /^\/config$/,
+	/^\/profile\//, /^\/profile$/,
+	/^\/history\//, /^\/history$/,
+	/^\/local\//, /^\/local$/,
+	/^\/hacsfiles\//, /^\/hacsfiles$/,
+	/^\/api\/websocket$/,
 ]
 
 type ProxyMountMode = 'prefix' | 'root-active'
+
+const ROOT_ACTIVE_APPS = new Set(['affine'])
+
+export function getProxyMountMode(appId: string): ProxyMountMode {
+	return ROOT_ACTIVE_APPS.has(appId) ? 'root-active' : 'prefix'
+}
 
 interface ActiveRootRoute {
 	appId: string
@@ -881,7 +900,7 @@ class Server {
 
 	#shouldForwardProxyHeaders(appId: string): boolean {
 		const kind = this.#appKinds.get(appId)
-		return appId === 'nextcloud' || kind === 'host-network'
+		return appId === 'nextcloud' || appId === 'home-assistant' || kind === 'host-network'
 	}
 
 	#getRecentProxyApp(request: http.IncomingMessage): string | undefined {
@@ -1943,9 +1962,10 @@ lightning:10009
 
 				request.url = `${appPath}${parsedUrl.search || ''}`
 
-				this.logger.log(`Proxy HTTP ${appId} → ${target} (req.url=${request.url})`)
+				const mountMode = getProxyMountMode(appId)
+				this.logger.log(`Proxy HTTP ${appId} → ${target} (req.url=${request.url}, mode=${mountMode})`)
 
-				this.#getAppProxy(appId, target, {rewriteLocation: true})(request, response, next)
+				this.#getAppProxy(appId, target, {rewriteLocation: true, mountMode})(request, response, next)
 
 			} catch (error) {
 

@@ -4,6 +4,7 @@ import {
 	getRootAbsoluteProxyAppId,
 	isImmutableChunkPath,
 	isUmbrelReservedRootPath,
+	getProxyMountMode,
 } from './index.js'
 
 describe('isRefererRequiredRootPath', () => {
@@ -31,6 +32,9 @@ describe('isRefererRequiredRootPath', () => {
 		})
 		it('/favicon.png', () => {
 			expect(isRefererRequiredRootPath('/favicon.png')).toBe(true)
+		})
+		it('/favicon-144.png', () => {
+			expect(isRefererRequiredRootPath('/favicon-144.png')).toBe(true)
 		})
 		it('/robots.txt', () => {
 			expect(isRefererRequiredRootPath('/robots.txt')).toBe(true)
@@ -267,5 +271,32 @@ describe('isUmbrelReservedRootPath', () => {
 		it('/socket.io/', () => {
 			expect(isUmbrelReservedRootPath('/socket.io/')).toBe(false)
 		})
+	})
+})
+
+describe('getProxyMountMode', () => {
+	it('returns root-active for affine', () => {
+		expect(getProxyMountMode('affine')).toBe('root-active')
+	})
+	it('returns prefix for open-webui', () => {
+		expect(getProxyMountMode('open-webui')).toBe('prefix')
+	})
+	it('returns prefix for home-assistant', () => {
+		expect(getProxyMountMode('home-assistant')).toBe('prefix')
+	})
+	it('returns prefix for tailscale', () => {
+		expect(getProxyMountMode('tailscale')).toBe('prefix')
+	})
+	it('returns prefix for jellyfin', () => {
+		expect(getProxyMountMode('jellyfin')).toBe('prefix')
+	})
+	it('returns prefix for nextcloud', () => {
+		expect(getProxyMountMode('nextcloud')).toBe('prefix')
+	})
+	it('returns prefix for ollama', () => {
+		expect(getProxyMountMode('ollama')).toBe('prefix')
+	})
+	it('returns prefix for unknown app', () => {
+		expect(getProxyMountMode('some-new-app')).toBe('prefix')
 	})
 })
