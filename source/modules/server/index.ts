@@ -340,6 +340,9 @@ class Server {
 
 	#activeRootRoutes = new Map<string, ActiveRootRoute[]>()
 
+	// Wildcard active root app: for root-active apps, ALL non-reserved root paths go to this app
+	#activeRootApps = new Map<string, {appId: string; expiresAt: number}>()
+
 	#isInstalledApp(appId: string): boolean {
 		return this.umbreld.apps.instances.some((app) => app.id === appId)
 	}
@@ -951,6 +954,27 @@ class Server {
 		return best?.appId
 	}
 
+	#rememberActiveRootApp(request: http.IncomingMessage, appId: string) {
+		const key = this.#getProxyClientKey(request)
+		this.#activeRootApps.set(key, {appId, expiresAt: Date.now() + 60 * 60 * 1000})
+		this.logger.log(`[${appId}] active-root app registered for client`)
+	}
+
+	#getActiveRootApp(request: http.IncomingMessage): string | undefined {
+		const key = this.#getProxyClientKey(request)
+		const entry = this.#activeRootApps.get(key)
+		if (!entry) return undefined
+		if (Date.now() > entry.expiresAt) {
+			this.#activeRootApps.delete(key)
+			return undefined
+		}
+		if (!this.#isInstalledApp(entry.appId)) {
+			this.#activeRootApps.delete(key)
+			return undefined
+		}
+		return entry.appId
+	}
+
 
 	#getHostProxyOverride(appId: string): string | undefined {
 		const key = `UMBREL_HOST_PROXY_TARGET_${appId.toUpperCase().replace(/-/g, '_')}`
@@ -1220,13 +1244,11 @@ class Server {
 			ws: false,
 			cookiePathRewrite: mountMode === 'prefix' ? {'/': prefix} : undefined,
 			cookieDomainRewrite: {'*': ''},
-			pathRewrite: mountMode === 'prefix'
-				? (path: string): string => {
-					if (path === prefix) return '/'
-					if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length)
-					return path
-				}
-				: undefined,
+			pathRewrite: (path: string): string => {
+				if (path === prefix) return '/'
+				if (path.startsWith(`${prefix}/`)) return path.slice(prefix.length)
+				return path
+			},
 			onError: (err: Error, _req: http.IncomingMessage, res: http.ServerResponse | any) => {
 				this.logger.error(`[${appId}] proxy error (${target}): ${(err as Error).message}`)
 				if ((res as http.ServerResponse).headersSent) return
@@ -1965,6 +1987,11 @@ lightning:10009
 				const mountMode = getProxyMountMode(appId)
 				this.logger.log(`Proxy HTTP ${appId} → ${target} (req.url=${request.url}, mode=${mountMode})`)
 
+				// Register wildcard active root app for root-active apps
+				if (mountMode === 'root-active') {
+					this.#rememberActiveRootApp(request, appId)
+				}
+
 				this.#getAppProxy(appId, target, {rewriteLocation: true, mountMode})(request, response, next)
 
 			} catch (error) {
@@ -2144,8 +2171,9 @@ docker exec tailscale_web_1 tailscale status</pre>
 			// Never steal Umbrel's own routes
 			if (isUmbrelReservedRootPath(pathname)) return next()
 
-			// Find active root app for this client
+			// Find active root app: first by specific route, then by wildcard
 			const activeAppId = this.#getActiveRootRouteApp(request, pathname)
+				?? this.#getActiveRootApp(request)
 			if (!activeAppId) return next()
 
 			try {
@@ -2174,8 +2202,9 @@ docker exec tailscale_web_1 tailscale status</pre>
 			const cookieBasedAppId = getProxyAppCookie(request)
 			const recentAppId = this.#getRecentProxyApp(request)
 			const activeRootAppId = this.#getActiveRootRouteApp(request, pathname)
+			const wildcardAppId = this.#getActiveRootApp(request)
 
-			const appId = activeRootAppId ?? getRootAbsoluteProxyAppId(pathname, refererBasedAppId, cookieBasedAppId, recentAppId)
+			const appId = activeRootAppId ?? wildcardAppId ?? getRootAbsoluteProxyAppId(pathname, refererBasedAppId, cookieBasedAppId, recentAppId)
 			if (!appId) {
 				this.logger.verbose(`root-absolute proxy: ${pathname} could not be resolved (no referer/cookie/recent/active), falling through`)
 				return next()
@@ -2328,8 +2357,9 @@ docker exec tailscale_web_1 tailscale status</pre>
 				// Proxies to the correct app when browser connects to root path
 				if (isRootAbsoluteAppPath(pathname) && !isUmbrelOwnedPath(pathname) && !isUmbrelReservedRootPath(pathname)) {
 					const upgradeReq = request as any
-					// Try active root route first
+					// Try active root route first, then wildcard
 					const activeAppId = this.#getActiveRootRouteApp(request as any, pathname)
+						?? this.#getActiveRootApp(request as any)
 					if (activeAppId) {
 						try {
 							const target = await this.#resolveAppTarget(activeAppId)
